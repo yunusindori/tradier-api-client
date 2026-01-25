@@ -1,0 +1,6 @@
+tradier:
+  api:
+    client:
+      base_url: https://sandbox.tradier.com/v1
+      streaming_url: wss://sandbox-ws.tradier.com/v1
+

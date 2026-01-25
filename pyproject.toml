@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradier-api-client"
+dynamic=["version"]
+description = "Tradier REST + Streaming API client"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }  # or: { file = "LICENSE" }
+authors = [{ name = "Your Name" }]
+
+# This replaces install_requires from setup.py
+dependencies = [
+    "requests>=2.25.1",
+    "cryptography>=41",
+    "websocket-client>=1.5"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tradier_api_client*"]
+exclude = ["tests", "build", "dist"]
+
+# List packages explicitly so the subpackages get included under the correct namespace
+# Only needed if there is no single top level package
+#[tool.setuptools]
+#packages = [
+#  "tradier_api_client",
+#  "tradier_api_client.rest",
+#  "tradier_api_client.streaming",
+#]
+[tool.setuptools.dynamic]
+version = {attr = "tradier_api_client.__version__"}

@@ -1,0 +1,20 @@
+# Default ignored files
+/shelf/
+/workspace.xml
+# Editor-based HTTP Client requests
+/httpRequests/
+# Datasource local storage ignored files
+/dataSources/
+/dataSources.local.xml
+/.idea
+/.idea/*
+build/*
+dist/*
+tests/real_data.py
+/tradier_api_client.zip
+/tradier_api_client_patched.zip
+/tradier_api_client.egg-info/*
+/tradier_api_client_rate_limit_onlydict_v2.zip
+/instruments.csv
+/.github/account_event_publisher.log
+/.github/streaming_reconnect_troubleshooting.md
