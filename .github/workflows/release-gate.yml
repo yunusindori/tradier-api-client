@@ -1,0 +1,90 @@
+name: Release Gate (TestPyPI)
+
+on:
+  pull_request:
+    branches: [ release ]
+    types: [ opened, synchronize, reopened, ready_for_review ]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  gate:
+    name: testpypi-reminder
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Post TestPyPI status reminder
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const pr = context.payload.pull_request;
+            const prNumber = pr.number;
+            const headSha = pr.head.sha;
+            const headRef = pr.head.ref;
+
+            const workflowName = 'Publish to TestPyPI (develop)';
+
+            // Find workflow id by name
+            const workflowsResp = await github.rest.actions.listRepoWorkflows({ owner, repo, per_page: 100 });
+            const workflow = workflowsResp.data.workflows.find(w => w.name === workflowName);
+
+            let statusLine;
+            let detailsLine = '';
+
+            if (!workflow) {
+              statusLine = `⚠️ Couldn't find workflow named '${workflowName}'. (Check the workflow name in .github/workflows/publish-testpypi.yml)`;
+            } else {
+              // Query runs for the PR head SHA
+              const runsResp = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: workflow.id,
+                head_sha: headSha,
+                per_page: 20,
+              });
+
+              const runs = runsResp.data.workflow_runs || [];
+              const success = runs.find(r => r.status === 'completed' && r.conclusion === 'success');
+              const latest = runs[0];
+
+              if (success) {
+                statusLine = `✅ TestPyPI publish succeeded for this PR's commit (${headSha.slice(0, 7)}).`;
+                detailsLine = `Run: ${success.html_url}`;
+              } else if (latest) {
+                statusLine = `⚠️ No successful TestPyPI publish found for this PR's commit (${headSha.slice(0, 7)}).`;
+                detailsLine = `Latest run: ${latest.status}/${latest.conclusion} — ${latest.html_url}`;
+              } else {
+                statusLine = `⚠️ No TestPyPI publish runs found for this PR's commit (${headSha.slice(0, 7)}).`;
+                detailsLine = `Note: the publish workflow currently only runs on pushes to 'develop'. Current PR head ref: '${headRef}'.`;
+              }
+            }
+
+            const marker = '<!-- testpypi-release-reminder -->';
+            const body = [
+              marker,
+              '## TestPyPI publish reminder',
+              '',
+              statusLine,
+              detailsLine ? detailsLine : '',
+              '',
+              'This is a reminder only (not an enforced merge gate on free private repos).',
+              'Merge into `release` when you have tested the TestPyPI build and you are ready to publish to prod.',
+            ].filter(Boolean).join('\n');
+
+            // Upsert a single sticky comment on the PR
+            const comments = await github.rest.issues.listComments({ owner, repo, issue_number: prNumber, per_page: 100 });
+            const existing = comments.data.find(c => (c.body || '').includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+            }
+
+            core.info('Posted/updated TestPyPI reminder comment.');
