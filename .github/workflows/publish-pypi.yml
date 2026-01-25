@@ -54,22 +54,22 @@ jobs:
     if: needs.publish.result == 'success'
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PR_BOT_APP_ID }}
+          private-key: ${{ secrets.PR_BOT_APP_PRIVATE_KEY }}
 
-      - name: Create or update PR (release -> main)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr list --head release --base main --state open --json number --jq '.[0].number' > pr.txt || true
-          PR_NUMBER=$(cat pr.txt)
-          if [ -n "$PR_NUMBER" ] && [ "$PR_NUMBER" != "null" ]; then
-            echo "PR already open: #$PR_NUMBER"
-            exit 0
-          fi
-
-          gh pr create \
-            --base main \
-            --head release \
-            --title "Release: merge release into main" \
-            --body "Automated PR created after successful publish to PyPI from release."
+      - name: Create PR (release -> main)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          base: main
+          branch: automation/release-to-main
+          title: "Release: merge release into main"
+          body: "Automated PR created after successful publish to PyPI from release."
+          commit-message: "chore: prepare main branch"
+          labels: automated
+          delete-branch: true
+          update-branch: true
