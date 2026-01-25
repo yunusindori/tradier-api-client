@@ -28,7 +28,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python_version: '3.11'
+          python-version: '3.11'
 
       - name: Install build tooling
         run: |
@@ -54,22 +54,26 @@ jobs:
     if: needs.publish.result == 'success'
 
     steps:
-      - name: Checkout
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PR_BOT_APP_ID }}
+          private-key: ${{ secrets.PR_BOT_APP_PRIVATE_KEY }}
+
+      - name: Checkout (with PR bot token)
         uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
 
-      - name: Create or update PR (develop -> release)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr list --head develop --base release --state open --json number --jq '.[0].number' > pr.txt || true
-          PR_NUMBER=$(cat pr.txt)
-          if [ -n "$PR_NUMBER" ] && [ "$PR_NUMBER" != "null" ]; then
-            echo "PR already open: #$PR_NUMBER"
-            exit 0
-          fi
-
-          gh pr create \
-            --base release \
-            --head develop \
-            --title "Release: merge develop into release" \
-            --body "Automated PR created after successful publish to TestPyPI from develop."
+      - name: Create PR (develop -> release)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          base: release
+          branch: automation/develop-to-release
+          title: "Release: merge develop into release"
+          body: "Automated PR created after successful publish to TestPyPI from develop."
+          commit-message: "chore: prepare release branch"
+          labels: automated
+          delete-branch: true

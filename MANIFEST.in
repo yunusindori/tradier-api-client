@@ -1,0 +1,7 @@
+# Exclude tests from source distributions
+prune tests
+
+# Also prune common local build artifacts
+prune build
+prune dist
+prune .pytest_cache

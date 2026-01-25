@@ -23,13 +23,5 @@ where = ["."]
 include = ["tradier_api_client*"]
 exclude = ["tests", "build", "dist"]
 
-# List packages explicitly so the subpackages get included under the correct namespace
-# Only needed if there is no single top level package
-#[tool.setuptools]
-#packages = [
-#  "tradier_api_client",
-#  "tradier_api_client.rest",
-#  "tradier_api_client.streaming",
-#]
 [tool.setuptools.dynamic]
 version = {attr = "tradier_api_client.__version__"}
