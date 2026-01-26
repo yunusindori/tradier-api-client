@@ -71,33 +71,40 @@ jobs:
           fetch-depth: 0
 
       - name: Ensure base branch (release) is fetched
+        shell: bash
         run: |
-          git fetch --no-tags --prune --progress origin release:refs/remotes/origin/release
+          set -euo pipefail
+          # Ensure we have a remote-tracking ref at refs/remotes/origin/release
+          git fetch --no-tags --prune --progress origin \
+            +refs/heads/release:refs/remotes/origin/release
 
       - name: Debug PR source/base state
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
           echo "== Local state =="
           echo "HEAD branch: $(git symbolic-ref -q --short HEAD || echo '(detached)')"
           echo "HEAD sha:    $(git rev-parse HEAD)"
           echo
           echo "== Remote-tracking refs =="
-          echo "origin/develop: $(git rev-parse refs/remotes/origin/develop)"
-          echo "origin/release: $(git rev-parse refs/remotes/origin/release)"
-          echo "merge-base:    $(git merge-base refs/remotes/origin/release refs/remotes/origin/develop)"
+          echo "origin/develop: $(git rev-parse refs/remotes/origin/develop 2>/dev/null)"
+          echo "origin/release: $(git rev-parse refs/remotes/origin/release 2>/dev/null)"
+          echo "merge-base:    $(git merge-base refs/remotes/origin/release refs/remotes/origin/develop 2>/dev/null)"
           echo
           echo "== Ahead/behind (release...develop) =="
-          git rev-list --left-right --count refs/remotes/origin/release...refs/remotes/origin/develop
+          git rev-list --left-right --count refs/remotes/origin/release...refs/remotes/origin/develop 2>/dev/null
           echo
           echo "== Files changed (release..develop) =="
-          git diff --name-status refs/remotes/origin/release..refs/remotes/origin/develop || true
+          git diff --name-status refs/remotes/origin/release..refs/remotes/origin/develop 2>/dev/null || true
           echo
           echo "== Last 5 commits =="
           echo "-- origin/develop --"
-          git --no-pager log --oneline -5 refs/remotes/origin/develop
+          git --no-pager log --oneline -5 refs/remotes/origin/develop 2>/dev/null
           echo "-- origin/release --"
-          git --no-pager log --oneline -5 refs/remotes/origin/release
+          git --no-pager log --oneline -5 refs/remotes/origin/release 2>/dev/null
+          echo
+          echo "== Raw show-ref (origin/*) =="
+          git show-ref | grep -E "refs/remotes/origin/(develop|release)" || true
 
       - name: Create PR (develop -> release)
         uses: peter-evans/create-pull-request@v6
