@@ -4,13 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tradier-api-client"
-dynamic=["version"]
+dynamic = ["version"]
 description = "Tradier REST + Streaming API client"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Proprietary" }  # or: { file = "LICENSE" }
-authors = [{ name = "Your Name" }]
-
+authors = [{ name = "Your Name", email = "yicodes2020@gmail.com" }]
 # This replaces install_requires from setup.py
 dependencies = [
     "requests>=2.25.1",
@@ -18,10 +17,13 @@ dependencies = [
     "websocket-client>=1.5"
 ]
 
+[project.urls]
+Repository = "https://github.com/yunusindori/tradier-api-client"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["tradier_api_client*"]
 exclude = ["tests", "build", "dist"]
 
 [tool.setuptools.dynamic]
-version = {attr = "tradier_api_client.__version__"}
+version = { attr = "tradier_api_client.__version__" }
