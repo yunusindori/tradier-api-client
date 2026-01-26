@@ -169,6 +169,47 @@ print(orders)
 
 ---
 
+---
+
+## Streaming (optional)
+
+If you want real\-time market data, use `StreamingClient` (websocket streaming). This is optional; the REST client works without it.
+
+The `StreamingClient` constructor takes in the main API key that you also use REST calls. Additional API keys and account numbers are meant for 
+advanced and serious trading.
+
+The `StreamingClient` instance for `markert` data streaming takes a list of symbols and event types in the start_listening call. 
+
+### Authentication
+
+`StreamingClient` uses the same `API_KEY` environment variable shown above.
+
+### Basic example: connect and print events
+
+```python
+import os
+import time
+
+
+
+from tradier_api_client import RestClient
+from tradier_api_client.streaming import StreamingClient  # adjust if your module path differs
+
+def on_message(msg: dict) -> None:
+    # The payload shape depends on the event type (quotes, trades, etc.)
+    print(msg)
+
+client = StreamingClient(main_api_key=os.environ.get("API_KEY"),
+                         base_url="",
+                         stream_base_url="",
+                         main_account_id=os.environ.get("ACCOUNT_ID"),
+                         events_callback=on_message, stream_type="account")
+client.start_listening()
+time.sleep(60)  # listen for 60 seconds
+client.stop()
+```
+
+---
 ## Running tests (local repo)
 
 This project includes tests/integration scripts under `tests/`.
