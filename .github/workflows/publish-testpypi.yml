@@ -70,6 +70,35 @@ jobs:
           ref: develop
           fetch-depth: 0
 
+      - name: Ensure base branch (release) is fetched
+        run: |
+          git fetch --no-tags --prune --progress origin release:refs/remotes/origin/release
+
+      - name: Debug PR source/base state
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== Local state =="
+          echo "HEAD branch: $(git symbolic-ref -q --short HEAD || echo '(detached)')"
+          echo "HEAD sha:    $(git rev-parse HEAD)"
+          echo
+          echo "== Remote-tracking refs =="
+          echo "origin/develop: $(git rev-parse refs/remotes/origin/develop)"
+          echo "origin/release: $(git rev-parse refs/remotes/origin/release)"
+          echo "merge-base:    $(git merge-base refs/remotes/origin/release refs/remotes/origin/develop)"
+          echo
+          echo "== Ahead/behind (release...develop) =="
+          git rev-list --left-right --count refs/remotes/origin/release...refs/remotes/origin/develop
+          echo
+          echo "== Files changed (release..develop) =="
+          git diff --name-status refs/remotes/origin/release..refs/remotes/origin/develop || true
+          echo
+          echo "== Last 5 commits =="
+          echo "-- origin/develop --"
+          git --no-pager log --oneline -5 refs/remotes/origin/develop
+          echo "-- origin/release --"
+          git --no-pager log --oneline -5 refs/remotes/origin/release
+
       - name: Create PR (develop -> release)
         uses: peter-evans/create-pull-request@v6
         with:
