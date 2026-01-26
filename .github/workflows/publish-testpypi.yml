@@ -5,8 +5,10 @@ on:
     branches: [develop]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
+  id-token: write
+  pages: write
 
 concurrency:
   group: publish-testpypi-develop
@@ -61,19 +63,65 @@ jobs:
           app-id: ${{ secrets.PR_BOT_APP_ID }}
           private-key: ${{ secrets.PR_BOT_APP_PRIVATE_KEY }}
 
-      - name: Checkout (with PR bot token)
-        uses: actions/checkout@v4
+      - name: Create or update PR (develop -> release)
+        uses: actions/github-script@v7
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
 
-      - name: Create PR (develop -> release)
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          base: release
-          branch: automation/develop-to-release
-          title: "Release: merge develop into release"
-          body: "Automated PR created after successful publish to TestPyPI from develop."
-          commit-message: "chore: prepare release branch"
-          labels: automated
-          delete-branch: true
+            const base = 'release';
+            const head = 'develop';
+
+            const title = 'Release: merge develop into release';
+            const body = [
+              'Automated PR created after a successful publish to TestPyPI from develop.',
+              '',
+              'Merge this PR when you\'ve finished testing the TestPyPI build.'
+            ].join('\n');
+
+            // Look for an existing open PR from develop -> release
+            const { data: pulls } = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: 'open',
+              base,
+              per_page: 100,
+            });
+
+            const existing = pulls.find(pr => pr.head && pr.head.ref === head);
+
+            if (existing) {
+              core.info(`PR already exists: #${existing.number} ${existing.html_url}`);
+              // Keep title/body up to date (optional)
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: existing.number,
+                title,
+                body,
+              });
+              return;
+            }
+
+            // Create a new one. This uses GitHub's native compare of head vs base.
+            try {
+              const { data: pr } = await github.rest.pulls.create({
+                owner,
+                repo,
+                title,
+                head,
+                base,
+                body,
+                maintainer_can_modify: true,
+              });
+              core.info(`Created PR: #${pr.number} ${pr.html_url}`);
+            } catch (e) {
+              // If there are no commits between head and base, GitHub returns 422.
+              if (e.status === 422) {
+                core.warning(`No PR created: '${head}' has no changes compared to '${base}'. (${e.message})`);
+                return;
+              }
+              throw e;
+            }
