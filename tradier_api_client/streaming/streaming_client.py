@@ -524,7 +524,7 @@ class StreamingClient:
                     if key and stream_dict:
                         self.check_session_id_for_stream(key)
                         if self._was_last_event_long_ago(stream_dict):
-                            stream_dict['stream'].send(self.build_market_stream_payload(symbols=stream_dict['symbols'],
-                                                                                        session_id=stream_dict[
-                                                                                            'session_id']))
+                            stream_dict['stream'].send_ping(
+                                self.build_market_stream_payload(symbols=stream_dict['symbols'],
+                                                                 session_id=stream_dict['session_id']))
                     time.sleep(1)
