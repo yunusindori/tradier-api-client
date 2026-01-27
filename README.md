@@ -200,8 +200,8 @@ def on_message(msg: dict) -> None:
     print(msg)
 
 client = StreamingClient(main_api_key=os.environ.get("API_KEY"),
-                         base_url="",
-                         stream_base_url="",
+                         base_url="https://sandbox.tradier.com/v1",
+                         stream_base_url="wss://sandbox-ws.tradier.com/v1",
                          main_account_id=os.environ.get("ACCOUNT_ID"),
                          events_callback=on_message, stream_type="account")
 client.start_listening()
