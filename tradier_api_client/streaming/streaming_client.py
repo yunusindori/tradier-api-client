@@ -198,7 +198,6 @@ class StreamingClient:
             self.keep_alive_thread.start()
             self.stream_started = True
         except Exception as e:
-            log_for_level(self.logger, logging.ERROR, "Failed to create or start stream: ")
             log_for_level(self.logger, logging.ERROR, "Failed to create or start stream: ", exc_info=e)
             log_for_level(self.logger, logging.ERROR, "Stopping the stream client...")
             try:
@@ -241,7 +240,11 @@ class StreamingClient:
         if self.stream_started:
             raise Exception("Stream already started, use update to make changes to the stream")
         self.session_id_refresher = threading.Thread(target=self.refresh_session_id, daemon=True)
-        self.keep_alive_thread.start = threading.Thread(target=self.keep_market_stream_alive, daemon=True)
+        # Create a fresh Thread object for the keep-alive worker and assign it to
+        # the keep_alive_thread attribute (not to its .start method). The previous
+        # code mistakenly overwrote `keep_alive_thread.start` which made it a
+        # non-callable Thread object and produced `TypeError: 'Thread' object is not callable`.
+        self.keep_alive_thread = threading.Thread(target=self.keep_market_stream_alive, daemon=True)
         self.events_streams = None
         # If stream_type is account, symbols and events will be ignored.
         self.start_listening(symbols=self.symbols_listened_to, event_types=self.event_types)
@@ -288,7 +291,11 @@ class StreamingClient:
         if self.stream_type == 'account':
             initial_payload = self.build_account_stream_payload(events=['orders'], session_id=session_id)
             log_for_level(self.logger, logging.DEBUG, f"Sending payload to stream: {initial_payload}")
-            self.events_streams[stream_key]['stream'].update_stream(json.dumps(initial_payload))
+            try:
+                self.events_streams[stream_key]['stream'].update_stream(json.dumps(initial_payload))
+            except Exception as e:
+                log_for_level(self.logger, logging.ERROR, "An error occurred while updating account stream: ",
+                              exc_info=e)
         elif self.stream_type == 'market':
             symbols = self.events_streams[stream_key]['symbols']
             initial_payload = self.build_market_stream_payload(symbols=symbols, session_id=session_id)
@@ -296,7 +303,7 @@ class StreamingClient:
             try:
                 self.events_streams[stream_key]['stream'].update_stream(json.dumps(initial_payload))
             except Exception as e:
-                self.logger.exception("An error occurred while updating stream: ", exc_info=e)
+                log_for_level(self.logger, logging.ERROR, "An error occurred while updating stream: ", exc_info=e)
 
     def _get_session_id_from_server(self, stream_key):
         """
@@ -424,11 +431,15 @@ class StreamingClient:
         self.stop_me = True
         self._stop_event.set()
         if self.events_streams and isinstance(self.events_streams, dict) and len(self.events_streams.keys()) > 0:
-            for account_id in self.events_streams.keys():
+            for account_id in list(self.events_streams.keys()):
                 stream_dict = self.events_streams.get(account_id) or {}
                 stream = stream_dict.get('stream')
                 if stream is not None:
-                    stream.stop()
+                    try:
+                        stream.stop()
+                    except Exception:
+                        # Best-effort stop; continue to join below
+                        log_for_level(self.logger, logging.ERROR, "Error while calling stream.stop()", exc_info=True)
 
         # Ensure the refresh thread fully exits before a restart clears the stop signal.
         try:
@@ -436,7 +447,30 @@ class StreamingClient:
                 self.session_id_refresher.join(timeout=5)
         except Exception:
             # Best-effort join; don't fail stop() if joining has issues.
-            pass
+            log_for_level(self.logger, logging.ERROR, "Error while joining session_id_refresher", exc_info=True)
+
+        # Ensure keep-alive thread exits as well (it may be iterating over events_streams).
+        try:
+            if self.keep_alive_thread and hasattr(self.keep_alive_thread,
+                                                  'is_alive') and self.keep_alive_thread.is_alive():
+                self.keep_alive_thread.join(timeout=5)
+        except Exception:
+            log_for_level(self.logger, logging.ERROR, "Error while joining keep_alive_thread", exc_info=True)
+
+        # Also join any StreamListener threads so they don't access cleared state after stop.
+        try:
+            if self.events_streams and isinstance(self.events_streams, dict):
+                for account_id in list(self.events_streams.keys()):
+                    stream = (self.events_streams.get(account_id) or {}).get('stream')
+                    if stream is not None and hasattr(stream, 'is_alive') and stream.is_alive():
+                        try:
+                            stream.join(timeout=5)
+                        except Exception:
+                            log_for_level(self.logger, logging.ERROR, "Error while joining stream thread",
+                                          exc_info=True)
+        except Exception:
+            log_for_level(self.logger, logging.ERROR, "Error while attempting to join stream listener threads",
+                          exc_info=True)
 
         self.stream_started = False
 
@@ -474,7 +508,7 @@ class StreamingClient:
         :param stream_key:
         :param exc:
         """
-        self.logger.exception("Error received from the stream: ", exc_info=exc)
+        log_for_level(self.logger, logging.ERROR, "Error received from the stream: ", exc_info=exc)
         log_for_level(self.logger, logging.ERROR,
                       f"Error received from the stream {stream_key}: ", exc_info=exc)
 
@@ -520,11 +554,30 @@ class StreamingClient:
         """
         if self.stream_type == 'market':
             while not self.stop_me:
-                for key, stream_dict in self.events_streams.items():
-                    if key and stream_dict:
-                        self.check_session_id_for_stream(key)
-                        if self._was_last_event_long_ago(stream_dict):
-                            stream_dict['stream'].send_ping(json.dumps(
-                                self.build_market_stream_payload(symbols=stream_dict['symbols'],
-                                                                 session_id=stream_dict['session_id'])))
+                # Defensive: events_streams may be None or mutated during restart/stop.
+                if not self.events_streams or not isinstance(self.events_streams, dict):
+                    # Sleep briefly and re-check; don't crash the thread if the dict isn't ready.
                     time.sleep(1)
+                    continue
+
+                for key, stream_dict in list(self.events_streams.items()):
+                    try:
+                        if key and stream_dict:
+                            self.check_session_id_for_stream(key)
+                            if self._was_last_event_long_ago(stream_dict):
+                                # guard send_ping since stream may be closed
+                                try:
+                                    stream = stream_dict.get('stream')
+                                    if stream is not None:
+                                        stream.send_ping(json.dumps(
+                                            self.build_market_stream_payload(symbols=stream_dict['symbols'],
+                                                                             session_id=stream_dict['session_id'])))
+                                except Exception:
+                                    log_for_level(self.logger, logging.ERROR,
+                                                  "Failed to send keep-alive ping; stream may be closed",
+                                                  exc_info=True)
+                    except Exception:
+                        # Catch per-stream errors to avoid killing the loop
+                        log_for_level(self.logger, logging.ERROR,
+                                      "Error in keep-alive loop for key", exc_info=True)
+                time.sleep(1)
