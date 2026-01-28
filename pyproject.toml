@@ -9,7 +9,7 @@ description = "Tradier REST + Streaming API client"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Proprietary" }  # or: { file = "LICENSE" }
-authors = [{ name = "Your Name", email = "yicodes2020@gmail.com" }]
+authors = [{ name = "Yunus Indori", email = "yicodes2020@gmail.com" }]
 # This replaces install_requires from setup.py
 dependencies = [
     "requests>=2.25.1",
