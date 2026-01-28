@@ -89,7 +89,9 @@ class StreamListener(ApplicationThread):
         Check if the underlying socket client is connected
         :return:
         """
-        return self.app.sock and self.app.sock.connected
+        # Defensive: self.app.sock may be None during connection setup/teardown. Return False in that case
+        sock = getattr(self.app, 'sock', None)
+        return bool(sock and getattr(sock, 'connected', False))
 
     def update_stream(self, updated_request):
         """
