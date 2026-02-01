@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 import traceback
+import random
 from functools import partial
 from queue import Queue
 from typing import Optional
@@ -16,32 +17,93 @@ from ..streaming.websocket_stream import StreamListener
 
 
 class StreamingClient:
-    """
-    WebSocket client. Only one session is allowed to be created for each stream type so it's up to you to only create
+    """WebSocket client.
+
+    Only one session is allowed to be created for each stream type so it's up to you to only create
     one instance each of this class for each stream type.
+
+    Reconnect policy
+    ----------------
+    The client can automatically restart streams when the server closes the websocket.
+
+    If reconnection fails for longer than the configured attempt/downtime budget, the client will
+    invoke the mandatory `irrecoverable_callback` so the caller can decide what to do next.
     """
 
     def __init__(
-            self, main_api_key, base_url, stream_base_url, main_account_id=None, additional_api_keys=None,
-            additional_account_ids=None, stream_type='account', config=None,
-            verbose=False, events_destination=None, events_callback=None, logger: logging.Logger = None):
-        """
+            self,
+            main_api_key,
+            base_url,
+            stream_base_url,
+            main_account_id=None,
+            additional_api_keys=None,
+            additional_account_ids=None,
+            stream_type='account',
+            config=None,
+            verbose=False,
+            events_destination=None,
+            events_callback=None,
+            logger: logging.Logger = None,
+            reconnect_attempts: int = 10,
+            reconnect_base_delay_seconds: float = 1.0,
+            reconnect_backoff_factor: float = 2.0,
+            reconnect_jitter_seconds: float = 0.1,
+            reconnect_max_downtime_seconds: float = 300.0,
+            irrecoverable_callback=None,
+    ):
+        """Create a StreamingClient.
 
-        Can be used to listen to account events or market events
+        Can be used to listen to account events or market events.
 
-        :param main_api_key: Primary trading account's api_key
-        :param additional_api_keys: Pass list of additional API keys for listening to more symbols than
-        self.NUM_SYMBOLS_PER_STREAM
-        :param stream_type: market or account
-        :param verbose: Log level will be set to DEBUG if True, else INFO
-        :param events_destination: A queue.Queue instance that the put method can be invoked on to store the
-            event. Make sure the queue has sufficient capacity left for the event to be stored.
-        :param events_callback: A callback method instead of destination to send the event to. Only one of
-            callback or destination can be used. Only use callback if it returns quickly else it's best to use
-            destination.
+        :param main_api_key: Primary trading account's api_key.
+        :param base_url: REST base URL used to obtain session ids.
+        :param stream_base_url: Websocket base URL.
+        :param main_account_id: Optional primary account id. If not provided, it is fetched via REST.
+        :param additional_api_keys: Optional list of additional API keys.
+        :param additional_account_ids: Optional list of additional account ids.
+        :param stream_type: One of: "market" or "account".
+        :param config: Reserved for future config usage.
+        :param verbose: Log level will be set to DEBUG if True, else INFO.
+        :param events_destination: A queue.Queue instance where messages will be delivered.
+        :param events_callback: Callback invoked with each decoded message. Only one of destination/callback allowed.
+        :param logger: Optional logger to use.
+
+        Reconnect parameters
+        --------------------
+        :param reconnect_attempts: Maximum reconnect attempts before declaring the stream irrecoverable.
+            Total attempts including the first reconnect attempt.
+        :param reconnect_base_delay_seconds: Base delay (seconds) between reconnect attempts.
+        :param reconnect_backoff_factor: Exponential backoff factor applied per attempt (>= 1.0).
+        :param reconnect_jitter_seconds: Optional jitter (seconds) added to reconnect delay to reduce thundering herd
+            problems. Default is 0.1 seconds.
+        :param reconnect_max_downtime_seconds: Maximum wall-clock time (seconds) allowed since the first reconnect
+            attempt before declaring irrecoverable.
+        :param irrecoverable_callback: Mandatory callback invoked once when the stream is irrecoverable.
+
+            Signature:
+                irrecoverable_callback(stream_type: str, reason: str, stream_key: str,
+                                       close_status_code: Optional[int], close_msg: Optional[str],
+                                       attempts: int, downtime_seconds: float) -> None
         """
-        self.logger = logging.getLogger(__name__)
+        self.logger = (logger if logger else logging.getLogger(__name__))
         self.logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+        if irrecoverable_callback is None or not callable(irrecoverable_callback):
+            raise Exception("irrecoverable_callback is mandatory and must be callable")
+
+        self.reconnect_attempts = int(reconnect_attempts)
+        self.reconnect_base_delay_seconds = float(reconnect_base_delay_seconds)
+        self.reconnect_backoff_factor = float(reconnect_backoff_factor)
+        self.reconnect_jitter_seconds = float(reconnect_jitter_seconds)
+        self.reconnect_max_downtime_seconds = float(reconnect_max_downtime_seconds)
+        self.irrecoverable_callback = irrecoverable_callback
+
+        # Reconnect state
+        self._reconnect_lock = threading.Lock()
+        self._reconnect_in_progress = False
+        self._reconnect_first_failure_ts: Optional[float] = None
+        self._reconnect_attempt_count = 0
+        self._irrecoverable_signaled = False
+
         self.__validate_init_inputs(main_api_key, main_account_id, additional_api_keys,
                                     additional_account_ids, stream_type, events_destination, events_callback)
         self.NUM_SYMBOLS_PER_STREAM = 1200
@@ -85,17 +147,14 @@ class StreamingClient:
         self._stop_event = threading.Event()
         self._run_id = 0
 
-        self.keep_alive_thread = threading.Thread(target=self.keep_market_stream_alive, daemon=True)
-        self.session_id_refresher = threading.Thread(target=self.refresh_session_id, daemon=True)
+        # Single maintenance thread (replaces keep_alive_thread + session_id_refresher).
+        self.maintenance_thread = threading.Thread(target=self.run_maintenance_loop, daemon=True)
 
     def __validate_init_inputs(
             self, main_api_key, main_account_id, additional_api_keys,
             additional_account_ids, stream_type,
             events_destination, events_callback):
-        """
-        Initial validation of inputs
-
-        """
+        """Initial validation of inputs."""
         log_for_level(self.logger, logging.DEBUG, "Validating inputs...")
         if not main_api_key or not isinstance(main_api_key, str) or not main_api_key.strip():
             raise Exception("main_api_key is mandatory")
@@ -124,6 +183,9 @@ class StreamingClient:
             raise Exception("Duplicate values passed in for api keys or account ids, please pass only unique values")
         if 0 < unique_additional_account_ids_length != unique_additional_api_keys_length:
             raise Exception("Additional account ids if passed must be unique and the same number as unique api keys")
+        # Ensure the callback is callable here too, to keep validation centralized.
+        if not getattr(self, 'irrecoverable_callback', None) or not callable(getattr(self, 'irrecoverable_callback')):
+            raise Exception('irrecoverable_callback is mandatory and must be callable')
         log_for_level(self.logger, logging.DEBUG, "Inputs validated...")
 
     def start_listening(self, symbols: list = None, event_types: list = None):
@@ -180,8 +242,7 @@ class StreamingClient:
                     self.event_types = event_types
                     # Initialize the stream later now so that symbols can be used in the open callback
                     log_for_level(self.logger, logging.DEBUG, "Starting websocket connection...")
-                    self.events_streams[account_id][
-                        'stream']: StreamListener = self._build_stream_listener_for_account_id(account_id)
+                    self.events_streams[account_id]['stream'] = self._build_stream_listener_for_account_id(account_id)
                     symbols_listened_to.extend(symbol_buckets[stream_index])
                     self.events_streams[account_id]['stream'].start()
                     log_for_level(self.logger, logging.DEBUG, "Market stream started...")
@@ -194,9 +255,13 @@ class StreamingClient:
                     account_id)
                 self.events_streams[self.account_ids[0]]['stream'].start()
                 log_for_level(self.logger, logging.DEBUG, "Account stream started...")
-            self.session_id_refresher.start()
-            self.keep_alive_thread.start()
+            # Start the maintenance thread for session refresh and keep-alive
+            self.maintenance_thread.start()
             self.stream_started = True
+            # Reconnect state resets on successful start.
+            self._reconnect_first_failure_ts = None
+            self._reconnect_attempt_count = 0
+            self._irrecoverable_signaled = False
         except Exception as e:
             log_for_level(self.logger, logging.ERROR, "Failed to create or start stream: ", exc_info=e)
             log_for_level(self.logger, logging.ERROR, "Stopping the stream client...")
@@ -239,12 +304,8 @@ class StreamingClient:
         log_for_level(self.logger, logging.INFO, "Restarting stream(s)...")
         if self.stream_started:
             raise Exception("Stream already started, use update to make changes to the stream")
-        self.session_id_refresher = threading.Thread(target=self.refresh_session_id, daemon=True)
-        # Create a fresh Thread object for the keep-alive worker and assign it to
-        # the keep_alive_thread attribute (not to its .start method). The previous
-        # code mistakenly overwrote `keep_alive_thread.start` which made it a
-        # non-callable Thread object and produced `TypeError: 'Thread' object is not callable`.
-        self.keep_alive_thread = threading.Thread(target=self.keep_market_stream_alive, daemon=True)
+        # Create a fresh Thread object for the maintenance worker so it can be started again.
+        self.maintenance_thread = threading.Thread(target=self.run_maintenance_loop, daemon=True)
         self.events_streams = None
         # If stream_type is account, symbols and events will be ignored.
         self.start_listening(symbols=self.symbols_listened_to, event_types=self.event_types)
@@ -276,23 +337,22 @@ class StreamingClient:
 
     # noinspection PyUnusedLocal
     def handle_open(self, stream_key):
-        """
-        This is called internally by this class to create a session id and post to the stream to start streaming.
+        """Called by StreamListener when the websocket connection is opened.
 
-        :param stream_key:
+        This method creates/refreshes a session id as needed and sends the initial subscription payload.
 
-        Raises:
-            Exception: If any issue occurs, like the stream is prematurely closed, or no symbols exist to send to the
-            stream, or if there was an error obtaining a session id. Be sure to handle the exception and retry.
+        :param stream_key: Account id key for the stream (used to look up the API key and stream metadata).
         """
-        api_key = self.account_id_to_api_key[stream_key]
         self.check_session_id_for_stream(stream_key)
         session_id = self.events_streams[stream_key]['session_id']
         if self.stream_type == 'account':
             initial_payload = self.build_account_stream_payload(events=['orders'], session_id=session_id)
             log_for_level(self.logger, logging.DEBUG, f"Sending payload to stream: {initial_payload}")
             try:
-                self.events_streams[stream_key]['stream'].update_stream(json.dumps(initial_payload))
+                stream = self.events_streams[stream_key]['stream']
+                if stream is None or not stream.is_running():
+                    raise Exception("Stream is not connected")
+                stream.update_stream(json.dumps(initial_payload))
             except Exception as e:
                 log_for_level(self.logger, logging.ERROR, "An error occurred while updating account stream: ",
                               exc_info=e)
@@ -301,43 +361,26 @@ class StreamingClient:
             initial_payload = self.build_market_stream_payload(symbols=symbols, session_id=session_id)
             log_for_level(self.logger, logging.DEBUG, f"Sending payload to stream: {initial_payload}")
             try:
-                self.events_streams[stream_key]['stream'].update_stream(json.dumps(initial_payload))
+                stream = self.events_streams[stream_key]['stream']
+                if stream is None or not stream.is_running():
+                    raise Exception("Stream is not connected")
+                stream.update_stream(json.dumps(initial_payload))
             except Exception as e:
                 log_for_level(self.logger, logging.ERROR, "An error occurred while updating stream: ", exc_info=e)
 
-    def _get_session_id_from_server(self, stream_key):
-        """
-        Common method to get session id for both stream types
-        :param stream_key:
-        :return:
-        """
-        return self.rest_client.create_market_session(stream_key)['stream'][
-            'sessionid'] if self.stream_type == 'market' else \
-            self.rest_client.create_account_session(stream_key)['stream'][
-                'sessionid']
+    def _get_session_id_from_server(self, api_key: str) -> str:
+        """Get a new session id from the server.
 
-    def get_current_symbols_list(self):
+        :param api_key: API key to use for creating the session.
+        :return: Session id string.
         """
-        Returns list of symbols currently being listened to
-        :return:
-        """
-        return self.symbols_listened_to
-
-    def refresh_session_id(self):
-        """Utility thread method to refresh session ids for all accounts every 30 minutes."""
-        my_run_id = self._run_id
-        while not self.stop_me and not self._stop_event.is_set() and my_run_id == self._run_id:
-            self.check_session_id()
-            # Wake early on stop.
-            self._stop_event.wait(60)
+        return self.rest_client.create_market_session(api_key)['stream']['sessionid'] if self.stream_type == 'market' else \
+            self.rest_client.create_account_session(api_key)['stream']['sessionid']
 
     def check_session_id(self):
-        """
-        Check and refresh session id for all streams
-        """
+        """Check and refresh session ids for all streams."""
         try:
-            if self.events_streams and isinstance(self.events_streams, dict) and len(
-                    self.events_streams.keys()) > 0:
+            if self.events_streams and isinstance(self.events_streams, dict) and len(self.events_streams.keys()) > 0:
                 log_for_level(self.logger, logging.DEBUG, "Checking session ids for all streams...")
                 for account_id in self.events_streams.keys():
                     self.check_session_id_for_stream(account_id)
@@ -345,9 +388,9 @@ class StreamingClient:
             log_for_level(self.logger, logging.WARNING, traceback.format_exc())
 
     def check_session_id_for_stream(self, stream_key):
-        """
-        Check and refresh session id for a stream
-        :param stream_key:
+        """Check and refresh session id for a stream.
+
+        :param stream_key: Account id key for the stream.
         """
         stream_dict = self.events_streams[stream_key]
         if self._session_id_refresh_condition_met(stream_key, stream_dict):
@@ -358,41 +401,31 @@ class StreamingClient:
             log_for_level(self.logger, logging.DEBUG, f"Got new session id for: {stream_key}...")
 
     def _session_id_refresh_condition_met(self, stream_key, stream_dict):
+        """Return True if a session id refresh is needed."""
         log_for_level(self.logger, logging.DEBUG, "Checking whether to obtain a new session id...")
-        get_new = stream_dict['stream'] is not None and stream_dict['stream'].is_running() and (
+
+        missing_session_id = (
                 'session_id' not in stream_dict.keys() or
-                not isinstance(stream_dict['session_id'], str) or
+                not isinstance(stream_dict.get('session_id'), str) or
+                not stream_dict.get('session_id')
+        )
+        ws_running = bool(stream_dict.get('stream') is not None and stream_dict.get('stream').is_running())
+
+        get_new = missing_session_id or (ws_running and (
                 'session_id_last_updated' not in stream_dict.keys() or
-                not isinstance(stream_dict['session_id_last_updated'], float)) or \
-                  (isinstance(stream_dict['session_id_last_updated'], float) and
+                not isinstance(stream_dict.get('session_id_last_updated'), float))) or \
+                  (isinstance(stream_dict.get('session_id_last_updated'), float) and
                    time.time() - stream_dict['session_id_last_updated'] > 1800) or self._was_last_event_long_ago(
             stream_dict)
         if get_new:
             log_for_level(self.logger, logging.DEBUG, f"Need new session id for {stream_key}...")
         return get_new
 
-    def _was_last_event_long_ago(self, stream_dict):
-        was_long_ago = not isinstance(stream_dict['last_event_timestamp'], float) or time.time() - stream_dict[
-            'last_event_timestamp'] > 240
-        log_for_level(self.logger, logging.DEBUG, f"Last event was several minutes ago: {was_long_ago}")
-        return was_long_ago
-
     # noinspection PyMethodMayBeStatic
     def build_market_stream_payload(
             self, symbols, session_id, payload_type_filter: Optional[list] = None, linebreak=True,
             valid_only=True, advanced_details=True):
-        """
-        Build market stream request payload to the send to the server
-
-        :return:
-        :param symbols:
-        :param session_id:
-        :param payload_type_filter:
-        :param linebreak:
-        :param valid_only:
-        :param advanced_details:
-        :return:
-        """
+        """Build market stream request payload."""
         payload = {
             'symbols': symbols,
             'sessionid': session_id,
@@ -406,14 +439,7 @@ class StreamingClient:
 
     # noinspection PyMethodMayBeStatic
     def build_account_stream_payload(self, events, session_id, exclude_accounts: Optional[list] = None):
-        """
-        Build account stream request payload to the send to the server
-
-        :param events:
-        :param session_id:
-        :param exclude_accounts:
-        :return:
-        """
+        """Build account stream request payload."""
         payload = {
             'events': events,
             'sessionid': session_id
@@ -421,6 +447,160 @@ class StreamingClient:
         if exclude_accounts and isinstance(exclude_accounts, list) and len(exclude_accounts) > 0:
             payload['excludeAccounts'] = exclude_accounts
         return payload
+
+    def refresh_session_id(self):
+        """Deprecated: use the combined maintenance loop.
+
+        This method is kept for backward compatibility and for any external callers.
+        It now runs a single session-id check.
+        """
+        self.check_session_id()
+
+    def run_maintenance_loop(self):
+        """Background maintenance loop.
+
+        This thread performs:
+        1) Periodic session-id refresh checks for all streams.
+        2) Market stream keep-alive behavior (send a ping/update when no events are received).
+
+        It replaces the earlier two-thread approach (session_id_refresher + keep_alive_thread).
+        """
+        my_run_id = self._run_id
+        last_session_check = 0.0
+        while not self.stop_me and not self._stop_event.is_set() and my_run_id == self._run_id:
+            now = time.time()
+
+            if now - last_session_check >= 60:
+                try:
+                    self.check_session_id()
+                except Exception:
+                    log_for_level(self.logger, logging.WARNING, traceback.format_exc())
+                last_session_check = now
+
+            if self.stream_type == 'market':
+                self._maybe_send_market_keepalive()
+
+            self._stop_event.wait(1)
+
+    def handle_close(self, stream_key, close_status_code=None, close_msg=None):
+        """Handle websocket close event.
+
+        For market streams, any single stream disconnect triggers a full stop + restart of all streams to ensure
+        all streams use fresh session ids.
+
+        :param stream_key: Account id key of the closed stream.
+        :param close_status_code: Optional websocket close status code.
+        :param close_msg: Optional websocket close message.
+        """
+        log_for_level(self.logger, logging.INFO, f"Stream for account id {stream_key} closed...")
+        log_for_level(self.logger, logging.INFO,
+                      f"Close status code: {close_status_code}, close message: {close_msg}")
+        if self.stop_me:
+            return
+
+        with self._reconnect_lock:
+            if self._reconnect_in_progress:
+                return
+            self._reconnect_in_progress = True
+
+        try:
+            if self._reconnect_first_failure_ts is None:
+                self._reconnect_first_failure_ts = time.time()
+                self._reconnect_attempt_count = 0
+
+            self.stream_started = False
+
+            while not self.stop_me:
+                self._reconnect_attempt_count += 1
+                downtime = time.time() - float(self._reconnect_first_failure_ts)
+
+                if self._reconnect_attempt_count > self.reconnect_attempts or downtime > self.reconnect_max_downtime_seconds:
+                    if not self._irrecoverable_signaled:
+                        self._irrecoverable_signaled = True
+                        reason = "reconnect budget exceeded"
+                        try:
+                            self.irrecoverable_callback(
+                                self.stream_type,
+                                reason,
+                                str(stream_key),
+                                close_status_code,
+                                close_msg,
+                                int(self._reconnect_attempt_count),
+                                float(downtime),
+                            )
+                        except Exception:
+                            log_for_level(self.logger, logging.ERROR, "Error while invoking irrecoverable_callback",
+                                          exc_info=True)
+                    return
+
+                delay = self.reconnect_base_delay_seconds * (
+                        self.reconnect_backoff_factor ** max(0, self._reconnect_attempt_count - 1)
+                )
+                if self.reconnect_jitter_seconds and self.reconnect_jitter_seconds > 0:
+                    delay = max(0.0, delay + random.uniform(-self.reconnect_jitter_seconds, self.reconnect_jitter_seconds))
+                log_for_level(
+                    self.logger,
+                    logging.INFO,
+                    f"Reconnect attempt {self._reconnect_attempt_count}/{self.reconnect_attempts} in {delay:.2f}s",
+                )
+                self._stop_event.wait(delay)
+                if self.stop_me:
+                    return
+
+                try:
+                    self.stop()
+                    if self.events_streams and isinstance(self.events_streams, dict):
+                        for k in list(self.events_streams.keys()):
+                            stream_dict = self.events_streams.get(k)
+                            if isinstance(stream_dict, dict):
+                                stream_dict['session_id'] = None
+                                stream_dict['session_id_last_updated'] = None
+
+                    self.restart_streams()
+                    self._reconnect_first_failure_ts = None
+                    self._reconnect_attempt_count = 0
+                    self._irrecoverable_signaled = False
+                    return
+                except Exception as e:
+                    log_for_level(self.logger, logging.WARNING, "Reconnect attempt failed", exc_info=e)
+        finally:
+            with self._reconnect_lock:
+                self._reconnect_in_progress = False
+
+    def keep_market_stream_alive(self):
+        """Deprecated: use the combined maintenance loop.
+
+        This method is kept for backward compatibility and for any external callers.
+        It now performs a single keep-alive pass.
+        """
+        if self.stream_type == 'market':
+            self._maybe_send_market_keepalive()
+
+    def _maybe_send_market_keepalive(self):
+        """Send keep-alive pings for market streams when no events are received.
+
+        This preserves the behavior of the original keep_alive_thread, but is invoked from
+        the combined maintenance loop.
+        """
+        # Defensive: events_streams may be None or mutated during restart/stop.
+        if not self.events_streams or not isinstance(self.events_streams, dict):
+            return
+
+        for key, stream_dict in list(self.events_streams.items()):
+            if not key or not stream_dict:
+                continue
+            try:
+                self.check_session_id_for_stream(key)
+                if self._was_last_event_long_ago(stream_dict):
+                    stream = stream_dict.get('stream')
+                    if stream is not None and stream.is_running():
+                        stream.send_ping(json.dumps(
+                            self.build_market_stream_payload(symbols=stream_dict.get('symbols'),
+                                                             session_id=stream_dict.get('session_id'))))
+            except Exception:
+                # Catch per-stream errors to avoid killing the loop
+                log_for_level(self.logger, logging.ERROR,
+                              "Error issuing keep-alive for market stream", exc_info=True)
 
     def stop(self):
         """
@@ -441,21 +621,12 @@ class StreamingClient:
                         # Best-effort stop; continue to join below
                         log_for_level(self.logger, logging.ERROR, "Error while calling stream.stop()", exc_info=True)
 
-        # Ensure the refresh thread fully exits before a restart clears the stop signal.
+        # Ensure the maintenance thread exits fully before a restart clears the stop signal.
         try:
-            if self.session_id_refresher and self.session_id_refresher.is_alive():
-                self.session_id_refresher.join(timeout=5)
+            if self.maintenance_thread and hasattr(self.maintenance_thread, 'is_alive') and self.maintenance_thread.is_alive():
+                self.maintenance_thread.join(timeout=5)
         except Exception:
-            # Best-effort join; don't fail stop() if joining has issues.
-            log_for_level(self.logger, logging.ERROR, "Error while joining session_id_refresher", exc_info=True)
-
-        # Ensure keep-alive thread exits as well (it may be iterating over events_streams).
-        try:
-            if self.keep_alive_thread and hasattr(self.keep_alive_thread,
-                                                  'is_alive') and self.keep_alive_thread.is_alive():
-                self.keep_alive_thread.join(timeout=5)
-        except Exception:
-            log_for_level(self.logger, logging.ERROR, "Error while joining keep_alive_thread", exc_info=True)
+            log_for_level(self.logger, logging.ERROR, "Error while joining maintenance_thread", exc_info=True)
 
         # Also join any StreamListener threads so they don't access cleared state after stop.
         try:
@@ -512,28 +683,6 @@ class StreamingClient:
         log_for_level(self.logger, logging.ERROR,
                       f"Error received from the stream {stream_key}: ", exc_info=exc)
 
-    def handle_close(self, stream_key, close_status_code=None, close_msg=None):
-        """
-        Handles the close event of the underlying websocket
-        :param stream_key:
-        :param close_status_code:
-        :param close_msg:
-        """
-        log_for_level(self.logger, logging.INFO, f"Stream for account id {stream_key} closed...")
-        log_for_level(self.logger, logging.INFO,
-                      f"Close status code: {close_status_code}, close message: {close_msg}")
-        if not self.stop_me:
-            log_for_level(self.logger, logging.INFO, "Not supposed to stop yet, attempting to reconnect...")
-            self.stream_started = False
-            try:
-                # Stop the currently running threads so that new ones can be started
-                self.stop()
-                # Restart the streams
-                self.restart_streams()
-            except Exception as e:
-                log_for_level(self.logger, logging.WARNING, "An error occurred trying to restart the streams: ",
-                              exc_info=e)
-
     def on_ping(self, stream_key):
         """
         Opportunity to respond to ping messages, currently unused
@@ -548,36 +697,16 @@ class StreamingClient:
         """
         pass
 
-    def keep_market_stream_alive(self):
-        """
-        Keep the stream alive in case there are no events received for a minute
-        """
-        if self.stream_type == 'market':
-            while not self.stop_me:
-                # Defensive: events_streams may be None or mutated during restart/stop.
-                if not self.events_streams or not isinstance(self.events_streams, dict):
-                    # Sleep briefly and re-check; don't crash the thread if the dict isn't ready.
-                    time.sleep(1)
-                    continue
+    def _was_last_event_long_ago(self, stream_dict):
+        """Return True if the last event was received too long ago.
 
-                for key, stream_dict in list(self.events_streams.items()):
-                    try:
-                        if key and stream_dict:
-                            self.check_session_id_for_stream(key)
-                            if self._was_last_event_long_ago(stream_dict):
-                                # guard send_ping since stream may be closed
-                                try:
-                                    stream = stream_dict.get('stream')
-                                    if stream is not None:
-                                        stream.send_ping(json.dumps(
-                                            self.build_market_stream_payload(symbols=stream_dict['symbols'],
-                                                                             session_id=stream_dict['session_id'])))
-                                except Exception:
-                                    log_for_level(self.logger, logging.ERROR,
-                                                  "Failed to send keep-alive ping; stream may be closed",
-                                                  exc_info=True)
-                    except Exception:
-                        # Catch per-stream errors to avoid killing the loop
-                        log_for_level(self.logger, logging.ERROR,
-                                      "Error in keep-alive loop for key", exc_info=True)
-                time.sleep(1)
+        Used as a signal for refreshing session ids and for keep-alive behavior.
+
+        :param stream_dict: Stream metadata dict.
+        :return: True if last_event_timestamp is missing/old.
+        """
+        # Follow original behavior: treat missing timestamp as "long ago".
+        was_long_ago = not isinstance(stream_dict.get('last_event_timestamp'), float) or \
+            time.time() - stream_dict.get('last_event_timestamp', 0.0) > 240
+        log_for_level(self.logger, logging.DEBUG, f"Last event was several minutes ago: {was_long_ago}")
+        return was_long_ago
