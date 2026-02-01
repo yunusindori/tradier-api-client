@@ -94,11 +94,16 @@ class StreamListener(ApplicationThread):
         return bool(sock and getattr(sock, 'connected', False))
 
     def update_stream(self, updated_request):
-        """
-        Update the stream as per documentation:
-        https://documentation.tradier.com/brokerage-api/streaming/wss-market-websocket
+        """Update the stream per Tradier documentation.
+
+        See: https://documentation.tradier.com/brokerage-api/streaming/wss-market-websocket
+
+        :param updated_request: Serialized request payload (string) to send to the websocket.
+        :raises websocket.WebSocketConnectionClosedException: If the connection is not currently open.
         """
         self.logger.debug(f"Sending message: {updated_request}")
+        if not self.is_running():
+            raise websocket.WebSocketConnectionClosedException("Connection is already closed.")
         self.app.send(data=updated_request)
 
     def run(self) -> None:
@@ -129,10 +134,13 @@ class StreamListener(ApplicationThread):
         pass
 
     def send_ping(self, data):
-        """
-        Not used right now
+        """Send a ping-like message over the websocket.
 
-        @param data:
+        This is used by the higher-level client as a keep-alive mechanism.
+
+        :param data: Serialized payload (string) to send.
+        :raises websocket.WebSocketConnectionClosedException: If the connection is not currently open.
         """
-        # TODO: Define the ping message
+        if not self.is_running():
+            raise websocket.WebSocketConnectionClosedException("Connection is already closed.")
         self.app.send(data)
