@@ -4,6 +4,8 @@ Tests for the OrderWrapper class in the Tradier API client.
 import json
 import os
 
+import pytest
+
 from tradier_api_client.rest import RestClient
 from tradier_api_client.rest.extensions.orders import OrderWrapper  # Assuming the implementation is in orders.py
 from tradier_api_client.rest.models.orders_fixed import OrderLeg
@@ -14,8 +16,10 @@ def initialize_rest_client():
     Initialize the RestClient with the sandbox URL and API key from environment variables.
     :return:
     """
-    return RestClient("https://sandbox.tradier.com/v1", os.environ.get('API_KEY'),
-                      verbose=True)
+    api_key = os.environ.get('API_KEY')
+    if not api_key:
+        pytest.skip("Skipping integration-style order tests: API_KEY environment variable not set")
+    return RestClient("https://sandbox.tradier.com/v1", api_key, verbose=True)
 
 
 # Initialize the RestClient and OrderWrapper
