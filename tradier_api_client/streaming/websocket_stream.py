@@ -102,9 +102,18 @@ class StreamListener(ApplicationThread):
         :raises websocket.WebSocketConnectionClosedException: If the connection is not currently open.
         """
         self.logger.debug(f"Sending message: {updated_request}")
+        if self.stop_me:
+            raise websocket.WebSocketConnectionClosedException("Connection is stopping.")
         if not self.is_running():
             raise websocket.WebSocketConnectionClosedException("Connection is already closed.")
-        self.app.send(data=updated_request)
+        try:
+            self.app.send(data=updated_request)
+        except websocket.WebSocketConnectionClosedException:
+            # Common during teardown; let callers decide whether to log.
+            raise
+        except Exception as e:
+            # websocket-client uses AttributeError/None sock paths during races; normalize into the same exception.
+            raise websocket.WebSocketConnectionClosedException("Connection is already closed.") from e
 
     def run(self) -> None:
         """
@@ -122,9 +131,13 @@ class StreamListener(ApplicationThread):
         Stop this thread
         """
         super(StreamListener, self).stop()
-        if self.app:
-            self.app.close()
-            self.app.keep_running = False
+        try:
+            if self.app:
+                self.app.keep_running = False
+                self.app.close()
+        except Exception:
+            # Best-effort close; swallow to keep shutdown quiet.
+            self.logger.debug("Suppressed exception while closing WebSocketApp", exc_info=True)
 
     def send_pong(self):
         """
@@ -141,6 +154,13 @@ class StreamListener(ApplicationThread):
         :param data: Serialized payload (string) to send.
         :raises websocket.WebSocketConnectionClosedException: If the connection is not currently open.
         """
+        if self.stop_me:
+            raise websocket.WebSocketConnectionClosedException("Connection is stopping.")
         if not self.is_running():
             raise websocket.WebSocketConnectionClosedException("Connection is already closed.")
-        self.app.send(data)
+        try:
+            self.app.send(data)
+        except websocket.WebSocketConnectionClosedException:
+            raise
+        except Exception as e:
+            raise websocket.WebSocketConnectionClosedException("Connection is already closed.") from e

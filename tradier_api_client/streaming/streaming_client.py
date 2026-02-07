@@ -90,6 +90,10 @@ class StreamingClient:
         if irrecoverable_callback is None or not callable(irrecoverable_callback):
             raise Exception("irrecoverable_callback is mandatory and must be callable")
 
+        # Indicates an intentional/active shutdown. Used to suppress noisy callback exceptions
+        # that can race with websocket-client internals during SIGINT/Ctrl-C.
+        self._is_shutting_down = False
+
         self.reconnect_attempts = int(reconnect_attempts)
         self.reconnect_base_delay_seconds = float(reconnect_base_delay_seconds)
         self.reconnect_backoff_factor = float(reconnect_backoff_factor)
@@ -343,6 +347,10 @@ class StreamingClient:
 
         :param stream_key: Account id key for the stream (used to look up the API key and stream metadata).
         """
+        # During shutdown, websocket-client can still deliver on_open. Bail out quietly.
+        if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
+            return
+
         self.check_session_id_for_stream(stream_key)
         session_id = self.events_streams[stream_key]['session_id']
         if self.stream_type == 'account':
@@ -351,9 +359,17 @@ class StreamingClient:
             try:
                 stream = self.events_streams[stream_key]['stream']
                 if stream is None or not stream.is_running():
-                    raise Exception("Stream is not connected")
+                    # Don't raise from callbacks; it just creates noisy stack traces.
+                    log_for_level(self.logger, logging.DEBUG, "Stream is not connected (account) - skipping send")
+                    return
                 stream.update_stream(json.dumps(initial_payload))
             except Exception as e:
+                # Suppress expected send errors during teardown.
+                if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
+                    log_for_level(self.logger, logging.DEBUG,
+                                  "Suppressed exception while updating account stream during shutdown",
+                                  exc_info=e)
+                    return
                 log_for_level(self.logger, logging.ERROR, "An error occurred while updating account stream: ",
                               exc_info=e)
         elif self.stream_type == 'market':
@@ -363,9 +379,15 @@ class StreamingClient:
             try:
                 stream = self.events_streams[stream_key]['stream']
                 if stream is None or not stream.is_running():
-                    raise Exception("Stream is not connected")
+                    log_for_level(self.logger, logging.DEBUG, "Stream is not connected (market) - skipping send")
+                    return
                 stream.update_stream(json.dumps(initial_payload))
             except Exception as e:
+                if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
+                    log_for_level(self.logger, logging.DEBUG,
+                                  "Suppressed exception while updating market stream during shutdown",
+                                  exc_info=e)
+                    return
                 log_for_level(self.logger, logging.ERROR, "An error occurred while updating stream: ", exc_info=e)
 
     def _get_session_id_from_server(self, api_key: str) -> str:
@@ -392,6 +414,8 @@ class StreamingClient:
 
         :param stream_key: Account id key for the stream.
         """
+        if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
+            return
         stream_dict = self.events_streams[stream_key]
         if self._session_id_refresh_condition_met(stream_key, stream_dict):
             log_for_level(self.logger, logging.DEBUG, f"Getting a new session id for: {stream_key}...")
@@ -495,7 +519,7 @@ class StreamingClient:
         log_for_level(self.logger, logging.INFO, f"Stream for account id {stream_key} closed...")
         log_for_level(self.logger, logging.INFO,
                       f"Close status code: {close_status_code}, close message: {close_msg}")
-        if self.stop_me:
+        if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
             return
 
         with self._reconnect_lock:
@@ -586,6 +610,9 @@ class StreamingClient:
         if not self.events_streams or not isinstance(self.events_streams, dict):
             return
 
+        if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
+            return
+
         for key, stream_dict in list(self.events_streams.items()):
             if not key or not stream_dict:
                 continue
@@ -603,13 +630,21 @@ class StreamingClient:
                               "Error issuing keep-alive for market stream", exc_info=True)
 
     def stop(self):
+        """Stop the stream client and all connected sockets and associated threads.
+
+        This method is idempotent and safe to call from signal handlers (e.g., Ctrl-C).
         """
-        Stops the stream client and all connected sockets and associated threads. Once the stream client is stopped,
-        a new instance of the client must be created if you want to listen to market or account streams again.
-        """
+        # Idempotent shutdown.
+        if getattr(self, '_is_shutting_down', False) and self.stop_me:
+            self.stream_started = False
+            return
+
         log_for_level(self.logger, logging.DEBUG, "Stopping all streams and threads...")
+        self._is_shutting_down = True
         self.stop_me = True
         self._stop_event.set()
+
+        # Best-effort: stop streams first so their callbacks stop firing.
         if self.events_streams and isinstance(self.events_streams, dict) and len(self.events_streams.keys()) > 0:
             for account_id in list(self.events_streams.keys()):
                 stream_dict = self.events_streams.get(account_id) or {}
@@ -618,15 +653,16 @@ class StreamingClient:
                     try:
                         stream.stop()
                     except Exception:
-                        # Best-effort stop; continue to join below
-                        log_for_level(self.logger, logging.ERROR, "Error while calling stream.stop()", exc_info=True)
+                        log_for_level(self.logger, logging.DEBUG, "Suppressed error while calling stream.stop()",
+                                      exc_info=True)
 
         # Ensure the maintenance thread exits fully before a restart clears the stop signal.
         try:
             if self.maintenance_thread and hasattr(self.maintenance_thread, 'is_alive') and self.maintenance_thread.is_alive():
                 self.maintenance_thread.join(timeout=5)
         except Exception:
-            log_for_level(self.logger, logging.ERROR, "Error while joining maintenance_thread", exc_info=True)
+            log_for_level(self.logger, logging.DEBUG, "Suppressed error while joining maintenance_thread",
+                          exc_info=True)
 
         # Also join any StreamListener threads so they don't access cleared state after stop.
         try:
@@ -637,21 +673,19 @@ class StreamingClient:
                         try:
                             stream.join(timeout=5)
                         except Exception:
-                            log_for_level(self.logger, logging.ERROR, "Error while joining stream thread",
+                            log_for_level(self.logger, logging.DEBUG, "Suppressed error while joining stream thread",
                                           exc_info=True)
         except Exception:
-            log_for_level(self.logger, logging.ERROR, "Error while attempting to join stream listener threads",
+            log_for_level(self.logger, logging.DEBUG, "Suppressed error while attempting to join stream threads",
                           exc_info=True)
 
         self.stream_started = False
 
     def handle_message(self, stream_key, msg):
-        """
-        Handles the message received from the underlying websocket
+        """Handles a message received from the underlying websocket."""
+        if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
+            return
 
-        :param stream_key:
-        :param msg:
-        """
         log_for_level(self.logger, logging.DEBUG, f"Received message from listener with key: {stream_key}")
         log_for_level(self.logger, logging.DEBUG, f"Message received: {msg}")
         if 'error' in msg:
@@ -674,11 +708,12 @@ class StreamingClient:
                               "An error occurred when invoking the callback function", exc_info=e)
 
     def handle_error(self, exc, stream_key):
-        """
-        Handles error related to the underlying websocket
-        :param stream_key:
-        :param exc:
-        """
+        """Handles error related to the underlying websocket."""
+        if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
+            # websocket-client may report errors during teardown; keep it quiet.
+            log_for_level(self.logger, logging.DEBUG, "Suppressed stream error during shutdown", exc_info=exc)
+            return
+
         log_for_level(self.logger, logging.ERROR, "Error received from the stream: ", exc_info=exc)
         log_for_level(self.logger, logging.ERROR,
                       f"Error received from the stream {stream_key}: ", exc_info=exc)
