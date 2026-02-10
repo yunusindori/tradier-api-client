@@ -216,7 +216,7 @@ class StreamingClient:
                 self.stop_me = False
             log_for_level(self.logger, logging.INFO, f"Using streaming base URL: {self.streaming_base_url}")
             if self.stream_type == 'market':
-                log_for_level(self.logger, logging.DEBUG, "Starting market stream...")
+                log_for_level(self.logger, logging.INFO, "Starting market stream...")
                 if not symbols or not isinstance(symbols, list) or len(symbols) == 0:
                     raise Exception("Pass a list of symbols")
                 symbols_listened_to = []
@@ -245,20 +245,20 @@ class StreamingClient:
                         self.events_streams[account_id]['event_types'] = event_types
                     self.event_types = event_types
                     # Initialize the stream later now so that symbols can be used in the open callback
-                    log_for_level(self.logger, logging.DEBUG, "Starting websocket connection...")
+                    log_for_level(self.logger, logging.INFO, "Starting websocket connection...")
                     self.events_streams[account_id]['stream'] = self._build_stream_listener_for_account_id(account_id)
                     symbols_listened_to.extend(symbol_buckets[stream_index])
                     self.events_streams[account_id]['stream'].start()
-                    log_for_level(self.logger, logging.DEBUG, "Market stream started...")
+                    log_for_level(self.logger, logging.INFO, "Market stream started...")
                 self.symbols_listened_to = symbols_listened_to
             else:
-                log_for_level(self.logger, logging.DEBUG, "Starting account stream...")
+                log_for_level(self.logger, logging.INFO, "Starting account stream...")
                 account_id = self.account_ids[0]
                 self._build_stream_dict_for_account_id(account_id)
                 self.events_streams[self.account_ids[0]]['stream'] = self._build_stream_listener_for_account_id(
                     account_id)
                 self.events_streams[self.account_ids[0]]['stream'].start()
-                log_for_level(self.logger, logging.DEBUG, "Account stream started...")
+                log_for_level(self.logger, logging.INFO, "Account stream started...")
             # Start the maintenance thread for session refresh and keep-alive
             self.maintenance_thread.start()
             self.stream_started = True
@@ -355,18 +355,18 @@ class StreamingClient:
         session_id = self.events_streams[stream_key]['session_id']
         if self.stream_type == 'account':
             initial_payload = self.build_account_stream_payload(events=['orders'], session_id=session_id)
-            log_for_level(self.logger, logging.DEBUG, f"Sending payload to stream: {initial_payload}")
+            log_for_level(self.logger, logging.INFO, f"Sending payload to stream: {initial_payload}")
             try:
                 stream = self.events_streams[stream_key]['stream']
                 if stream is None or not stream.is_running():
                     # Don't raise from callbacks; it just creates noisy stack traces.
-                    log_for_level(self.logger, logging.DEBUG, "Stream is not connected (account) - skipping send")
+                    log_for_level(self.logger, logging.INFO, "Stream is not connected (account) - skipping send")
                     return
                 stream.update_stream(json.dumps(initial_payload))
             except Exception as e:
                 # Suppress expected send errors during teardown.
                 if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
-                    log_for_level(self.logger, logging.DEBUG,
+                    log_for_level(self.logger, logging.INFO,
                                   "Suppressed exception while updating account stream during shutdown",
                                   exc_info=e)
                     return
@@ -375,16 +375,16 @@ class StreamingClient:
         elif self.stream_type == 'market':
             symbols = self.events_streams[stream_key]['symbols']
             initial_payload = self.build_market_stream_payload(symbols=symbols, session_id=session_id)
-            log_for_level(self.logger, logging.DEBUG, f"Sending payload to stream: {initial_payload}")
+            log_for_level(self.logger, logging.INFO, f"Sending initial payload to stream: {initial_payload}")
             try:
                 stream = self.events_streams[stream_key]['stream']
                 if stream is None or not stream.is_running():
-                    log_for_level(self.logger, logging.DEBUG, "Stream is not connected (market) - skipping send")
+                    log_for_level(self.logger, logging.INFO, "Stream is not connected (market) - skipping send")
                     return
                 stream.update_stream(json.dumps(initial_payload))
             except Exception as e:
                 if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
-                    log_for_level(self.logger, logging.DEBUG,
+                    log_for_level(self.logger, logging.INFO,
                                   "Suppressed exception while updating market stream during shutdown",
                                   exc_info=e)
                     return
@@ -403,7 +403,7 @@ class StreamingClient:
         """Check and refresh session ids for all streams."""
         try:
             if self.events_streams and isinstance(self.events_streams, dict) and len(self.events_streams.keys()) > 0:
-                log_for_level(self.logger, logging.DEBUG, "Checking session ids for all streams...")
+                log_for_level(self.logger, logging.INFO, "Checking session ids for all streams...")
                 for account_id in self.events_streams.keys():
                     self.check_session_id_for_stream(account_id)
         except Exception:
@@ -418,15 +418,15 @@ class StreamingClient:
             return
         stream_dict = self.events_streams[stream_key]
         if self._session_id_refresh_condition_met(stream_key, stream_dict):
-            log_for_level(self.logger, logging.DEBUG, f"Getting a new session id for: {stream_key}...")
+            log_for_level(self.logger, logging.INFO, f"Getting a new session id for: {stream_key}...")
             api_key = self.account_id_to_api_key[stream_key]
             stream_dict['session_id'] = self._get_session_id_from_server(api_key)
             stream_dict['session_id_last_updated'] = time.time()
-            log_for_level(self.logger, logging.DEBUG, f"Got new session id for: {stream_key}...")
+            log_for_level(self.logger, logging.INFO, f"Got new session id for: {stream_key}...")
 
     def _session_id_refresh_condition_met(self, stream_key, stream_dict):
         """Return True if a session id refresh is needed."""
-        log_for_level(self.logger, logging.DEBUG, "Checking whether to obtain a new session id...")
+        log_for_level(self.logger, logging.INFO, "Checking whether to obtain a new session id...")
 
         missing_session_id = (
                 'session_id' not in stream_dict.keys() or
@@ -442,7 +442,7 @@ class StreamingClient:
                    time.time() - stream_dict['session_id_last_updated'] > 1800) or self._was_last_event_long_ago(
             stream_dict)
         if get_new:
-            log_for_level(self.logger, logging.DEBUG, f"Need new session id for {stream_key}...")
+            log_for_level(self.logger, logging.INFO, f"Need new session id for {stream_key}...")
         return get_new
 
     # noinspection PyMethodMayBeStatic
@@ -639,7 +639,7 @@ class StreamingClient:
             self.stream_started = False
             return
 
-        log_for_level(self.logger, logging.DEBUG, "Stopping all streams and threads...")
+        log_for_level(self.logger, logging.INFO, "Stopping all streams and threads...")
         self._is_shutting_down = True
         self.stop_me = True
         self._stop_event.set()
@@ -653,7 +653,7 @@ class StreamingClient:
                     try:
                         stream.stop()
                     except Exception:
-                        log_for_level(self.logger, logging.DEBUG, "Suppressed error while calling stream.stop()",
+                        log_for_level(self.logger, logging.INFO, "Suppressed error while calling stream.stop()",
                                       exc_info=True)
 
         # Ensure the maintenance thread exits fully before a restart clears the stop signal.
@@ -661,7 +661,7 @@ class StreamingClient:
             if self.maintenance_thread and hasattr(self.maintenance_thread, 'is_alive') and self.maintenance_thread.is_alive():
                 self.maintenance_thread.join(timeout=5)
         except Exception:
-            log_for_level(self.logger, logging.DEBUG, "Suppressed error while joining maintenance_thread",
+            log_for_level(self.logger, logging.INFO, "Suppressed error while joining maintenance_thread",
                           exc_info=True)
 
         # Also join any StreamListener threads so they don't access cleared state after stop.
@@ -673,10 +673,10 @@ class StreamingClient:
                         try:
                             stream.join(timeout=5)
                         except Exception:
-                            log_for_level(self.logger, logging.DEBUG, "Suppressed error while joining stream thread",
+                            log_for_level(self.logger, logging.INFO, "Suppressed error while joining stream thread",
                                           exc_info=True)
         except Exception:
-            log_for_level(self.logger, logging.DEBUG, "Suppressed error while attempting to join stream threads",
+            log_for_level(self.logger, logging.ERROR, "Suppressed error while attempting to join stream threads",
                           exc_info=True)
 
         self.stream_started = False
@@ -711,7 +711,7 @@ class StreamingClient:
         """Handles error related to the underlying websocket."""
         if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
             # websocket-client may report errors during teardown; keep it quiet.
-            log_for_level(self.logger, logging.DEBUG, "Suppressed stream error during shutdown", exc_info=exc)
+            log_for_level(self.logger, logging.INFO, "Suppressed stream error during shutdown", exc_info=exc)
             return
 
         log_for_level(self.logger, logging.ERROR, "Error received from the stream: ", exc_info=exc)
