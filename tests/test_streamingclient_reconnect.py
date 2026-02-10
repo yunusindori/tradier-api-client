@@ -78,7 +78,7 @@ def test_irrecoverable_callback_is_mandatory():
 
 
 def test_handle_close_reconnect_success_resets_session_ids():
-    """If restart succeeds, session ids should be cleared before restart and no irrecoverable callback fires."""
+    """If restart succeeds, session ids should be preserved for reuse and no irrecoverable callback fires."""
     cb = Mock()
     client = _make_client(stream_type="market", irrecoverable_callback=cb)
 
@@ -91,11 +91,9 @@ def test_handle_close_reconnect_success_resets_session_ids():
 
     client.handle_close("A1", close_status_code=1000, close_msg="bye")
 
-    # Session ids cleared (all streams)
-    assert client.events_streams["A1"]["session_id"] is None
-    assert client.events_streams["A2"]["session_id"] is None
-    assert client.events_streams["A1"]["session_id_last_updated"] is None
-    assert client.events_streams["A2"]["session_id_last_updated"] is None
+    # Session ids preserved (may be reused within TTL)
+    assert client.events_streams["A1"]["session_id"] == "s1"
+    assert client.events_streams["A2"]["session_id"] == "s2"
 
     client.restart_streams.assert_called_once()
     cb.assert_not_called()
