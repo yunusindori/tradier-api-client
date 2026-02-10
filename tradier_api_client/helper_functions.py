@@ -4,6 +4,7 @@ General utility functions for the Tradier API client.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 
@@ -38,4 +39,19 @@ def log_for_level(
     if exc_info is None and exc is not None:
         exc_info = exc
 
-    logger.log(level, message, exc_info=exc_info, stack_info=stack_info, extra=extra)
+    logger.log(level, message, exc_info=exc_info, stack_info=stack_info, extra=extra, stacklevel=2)
+
+
+def log_entry_exit(level=logging.INFO):
+    # A decorator to log entry and exit of a function at the specified level.
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            logger = logging.getLogger(func.__qualname__)
+            log_for_level(logger, level, f"Entering {func.__name__}")
+            try:
+                return func(*args, **kwargs)
+            finally:
+                log_for_level(logger, level, f"Finished {func.__name__}")
+
+        return wrapper
+    return decorator
