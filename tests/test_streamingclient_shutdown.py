@@ -46,8 +46,6 @@ def _bare_client() -> StreamingClient:
     client.account_id_to_api_key = {"A1": "k"}
     client.rest_client = Mock()
 
-    client.maintenance_thread = threading.Thread(target=lambda: None, daemon=True)
-
     # Methods used in callbacks
     client.check_session_id_for_stream = Mock()
     return client
@@ -63,7 +61,7 @@ def test_callbacks_are_quiet_during_shutdown():
     # Should not raise
     client.handle_open("A1")
     client.handle_message("A1", {"foo": "bar"})
-    client.handle_error(Exception("boom"), "A1")
+    client.handle_error("A1", Exception("boom"))
     client.handle_close("A1", 1000, "bye")
 
     # Use Mock API explicitly for type checkers.
