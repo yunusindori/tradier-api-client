@@ -3,10 +3,10 @@ Stream Client
 """
 import json
 import logging
+import random
 import threading
 import time
 import traceback
-import random
 from functools import partial
 from queue import Queue
 from typing import Optional
@@ -65,7 +65,7 @@ class StreamingClient:
             reconnect_jitter_seconds: float = 0.1,
             reconnect_max_downtime_seconds: float = 300.0,
             irrecoverable_callback=None,
-            session_id_ttl_seconds: float = 300.0,
+            session_id_ttl_seconds: float = 270.0,
     ):
         """Create a StreamingClient.
 
@@ -362,7 +362,7 @@ class StreamingClient:
         log_for_level(self.logger, logging.INFO, "Re-starting stream(s)...")
         self.restart_streams()
 
-    # noinspection PyUnusedLocal
+    @log_entry_exit()
     def handle_open(self, stream_key):
         """Called by StreamListener when the websocket connection is opened.
 
@@ -419,7 +419,8 @@ class StreamingClient:
         :param api_key: API key to use for creating the session.
         :return: Session id string.
         """
-        return self.rest_client.create_market_session(api_key)['stream']['sessionid'] if self.stream_type == 'market' else \
+        return self.rest_client.create_market_session(api_key)['stream'][
+            'sessionid'] if self.stream_type == 'market' else \
             self.rest_client.create_account_session(api_key)['stream']['sessionid']
 
     def check_session_id(self):
@@ -478,7 +479,7 @@ class StreamingClient:
         if isinstance(last_updated, (int, float)) and self.session_id_ttl_seconds and self.session_id_ttl_seconds > 0:
             age_seconds = time.time() - float(last_updated)
             if age_seconds <= float(self.session_id_ttl_seconds):
-                log_for_level(self.logger, logging.DEBUG,
+                log_for_level(self.logger, logging.INFO,
                               f"Reusing existing session id for {stream_key} (age={age_seconds:.2f}s)")
                 return False
 
@@ -629,6 +630,7 @@ class StreamingClient:
                 log_for_level(self.logger, logging.ERROR,
                               "An error occurred when invoking the callback function", exc_info=e)
 
+    @log_entry_exit()
     def handle_error(self, stream_key, exc):
         """Handles error related to the underlying websocket.
 
@@ -666,10 +668,11 @@ class StreamingClient:
         """
         # Follow original behavior: treat missing timestamp as "long ago".
         was_long_ago = not isinstance(stream_dict.get('last_event_timestamp'), float) or \
-            time.time() - stream_dict.get('last_event_timestamp', 0.0) > 240
+                       time.time() - stream_dict.get('last_event_timestamp', 0.0) > 240
         log_for_level(self.logger, logging.DEBUG, f"Last event was several minutes ago: {was_long_ago}")
         return was_long_ago
 
+    @log_entry_exit()
     def handle_close(self, stream_key, close_status_code=None, close_msg=None):
         """Handle websocket close event.
 
@@ -767,4 +770,3 @@ class StreamingClient:
         finally:
             with self._reconnect_lock:
                 self._reconnect_in_progress = False
-
