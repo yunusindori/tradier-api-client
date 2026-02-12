@@ -3,10 +3,10 @@ Stream Client
 """
 import json
 import logging
+import random
 import threading
 import time
 import traceback
-import random
 from functools import partial
 from queue import Queue
 from typing import Optional
@@ -65,7 +65,7 @@ class StreamingClient:
             reconnect_jitter_seconds: float = 0.1,
             reconnect_max_downtime_seconds: float = 300.0,
             irrecoverable_callback=None,
-            session_id_ttl_seconds: float = 300.0,
+            session_id_ttl_seconds: float = 270.0,
     ):
         """Create a StreamingClient.
 
@@ -167,8 +167,14 @@ class StreamingClient:
         # Used to reliably stop background threads and avoid "old" threads running after restarts.
         self._stop_event = threading.Event()
 
-        # NOTE: No maintenance thread.
-        # Session ids are refreshed only on connect (when missing) and after unexpected disconnects.
+        # Reconnect worker thread (so we don't reconnect from inside websocket callbacks)
+        self._reconnect_thread: Optional[threading.Thread] = None
+        self._reconnect_requested = threading.Event()
+
+        # Last close context (used for irrecoverable_callback from the reconnect worker)
+        self._last_close_stream_key: Optional[str] = None
+        self._last_close_status_code: Optional[int] = None
+        self._last_close_msg: Optional[str] = None
 
     def __validate_init_inputs(
             self, main_api_key, main_account_id, additional_api_keys,
@@ -362,7 +368,7 @@ class StreamingClient:
         log_for_level(self.logger, logging.INFO, "Re-starting stream(s)...")
         self.restart_streams()
 
-    # noinspection PyUnusedLocal
+    @log_entry_exit()
     def handle_open(self, stream_key):
         """Called by StreamListener when the websocket connection is opened.
 
@@ -419,7 +425,8 @@ class StreamingClient:
         :param api_key: API key to use for creating the session.
         :return: Session id string.
         """
-        return self.rest_client.create_market_session(api_key)['stream']['sessionid'] if self.stream_type == 'market' else \
+        return self.rest_client.create_market_session(api_key)['stream'][
+            'sessionid'] if self.stream_type == 'market' else \
             self.rest_client.create_account_session(api_key)['stream']['sessionid']
 
     def check_session_id(self):
@@ -478,7 +485,7 @@ class StreamingClient:
         if isinstance(last_updated, (int, float)) and self.session_id_ttl_seconds and self.session_id_ttl_seconds > 0:
             age_seconds = time.time() - float(last_updated)
             if age_seconds <= float(self.session_id_ttl_seconds):
-                log_for_level(self.logger, logging.DEBUG,
+                log_for_level(self.logger, logging.INFO,
                               f"Reusing existing session id for {stream_key} (age={age_seconds:.2f}s)")
                 return False
 
@@ -629,6 +636,7 @@ class StreamingClient:
                 log_for_level(self.logger, logging.ERROR,
                               "An error occurred when invoking the callback function", exc_info=e)
 
+    @log_entry_exit()
     def handle_error(self, stream_key, exc):
         """Handles error related to the underlying websocket.
 
@@ -666,10 +674,11 @@ class StreamingClient:
         """
         # Follow original behavior: treat missing timestamp as "long ago".
         was_long_ago = not isinstance(stream_dict.get('last_event_timestamp'), float) or \
-            time.time() - stream_dict.get('last_event_timestamp', 0.0) > 240
+                       time.time() - stream_dict.get('last_event_timestamp', 0.0) > 240
         log_for_level(self.logger, logging.DEBUG, f"Last event was several minutes ago: {was_long_ago}")
         return was_long_ago
 
+    @log_entry_exit()
     def handle_close(self, stream_key, close_status_code=None, close_msg=None):
         """Handle websocket close event.
 
@@ -689,82 +698,158 @@ class StreamingClient:
 
         # Ignore closes during intentional shutdown.
         if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
+            log_for_level(self.logger, logging.INFO, "Shutdown in progress - ignoring close event")
             return
 
-        # Single-flight guard: only one reconnect loop at a time.
+        # Record the last close context for irrecoverable signaling.
+        self._last_close_stream_key = str(stream_key) if stream_key is not None else None
+        self._last_close_status_code = close_status_code
+        self._last_close_msg = close_msg
+
+        # Request a reconnect and return quickly (callbacks run in StreamListener thread).
+        self._start_reconnect_worker_if_needed()
+        self._reconnect_requested.set()
+        return
+
+    def _stop_streams_for_restart(self):
+        """Stop streams/threads in preparation for a restart.
+
+        This is different from :meth:`stop`:
+        - It must NOT set shutdown flags (stop_me/_stop_event/_is_shutting_down), because those cause
+          on_open/on_message handlers to bail out.
+        - It must NOT join the currently executing StreamListener thread (websocket callback thread).
+
+        Best-effort: errors are suppressed because teardown races are common during disconnects.
+        """
+        if not self.events_streams or not isinstance(self.events_streams, dict):
+            return
+
+        current = threading.current_thread()
+
+        # Ask all streams to stop first.
+        for account_id in list(self.events_streams.keys()):
+            stream = (self.events_streams.get(account_id) or {}).get('stream')
+            if stream is None:
+                continue
+            try:
+                stream.stop()
+            except Exception:
+                log_for_level(self.logger, logging.INFO,
+                              "Suppressed error while stopping stream during restart", exc_info=True)
+
+        # Join threads we can (never join current callback thread).
+        for account_id in list(self.events_streams.keys()):
+            stream = (self.events_streams.get(account_id) or {}).get('stream')
+            if stream is None:
+                continue
+            try:
+                if hasattr(stream, 'is_alive') and stream.is_alive():
+                    if stream is current:
+                        continue
+                    stream.join(timeout=5)
+            except Exception:
+                log_for_level(self.logger, logging.INFO,
+                              "Suppressed error while joining stream thread during restart", exc_info=True)
+
+    def _start_reconnect_worker_if_needed(self):
+        """Ensure there is a single reconnect worker thread running."""
         with self._reconnect_lock:
-            if self._reconnect_in_progress:
+            t = self._reconnect_thread
+            if t is not None and t.is_alive():
                 return
-            self._reconnect_in_progress = True
+            self._reconnect_thread = threading.Thread(
+                target=self._reconnect_worker_loop,
+                name="StreamingClientReconnectWorker",
+                daemon=True,
+            )
+            self._reconnect_thread.start()
 
-        try:
-            if self._reconnect_first_failure_ts is None:
-                self._reconnect_first_failure_ts = time.time()
-                self._reconnect_attempt_count = 0
+    def _reconnect_worker_loop(self):
+        """Background loop that performs reconnect attempts when requested."""
+        while not self.stop_me and not self._stop_event.is_set():
+            # Wait until a reconnect is requested.
+            self._reconnect_requested.wait(timeout=0.5)
+            if self.stop_me or self._stop_event.is_set():
+                return
+            if not self._reconnect_requested.is_set():
+                continue
 
-            # Mark not started so restart_streams() can run.
-            self.stream_started = False
+            # Clear the request so additional closes can re-request after we finish.
+            self._reconnect_requested.clear()
 
-            while not self.stop_me and not self._stop_event.is_set():
-                self._reconnect_attempt_count += 1
-                downtime = time.time() - float(self._reconnect_first_failure_ts)
+            # Single-flight guard.
+            with self._reconnect_lock:
+                if self._reconnect_in_progress:
+                    continue
+                self._reconnect_in_progress = True
 
-                if self._reconnect_attempt_count > self.reconnect_attempts or \
-                        downtime > self.reconnect_max_downtime_seconds:
-                    if not self._irrecoverable_signaled:
-                        self._irrecoverable_signaled = True
-                        reason = "reconnect budget exceeded"
-                        try:
-                            self.irrecoverable_callback(
-                                self.stream_type,
-                                reason,
-                                str(stream_key),
-                                close_status_code,
-                                close_msg,
-                                int(self._reconnect_attempt_count),
-                                float(downtime),
-                            )
-                        except Exception:
-                            log_for_level(self.logger, logging.ERROR,
-                                          "Error while invoking irrecoverable_callback", exc_info=True)
-                    return
+            try:
+                if self._reconnect_first_failure_ts is None:
+                    self._reconnect_first_failure_ts = time.time()
+                    self._reconnect_attempt_count = 0
 
-                delay = self.reconnect_base_delay_seconds * (
-                        self.reconnect_backoff_factor ** max(0, self._reconnect_attempt_count - 1)
-                )
-                if self.reconnect_jitter_seconds and self.reconnect_jitter_seconds > 0:
-                    delay = max(
-                        0.0,
-                        delay + random.uniform(-self.reconnect_jitter_seconds, self.reconnect_jitter_seconds)
+                # Mark not started so restart_streams() can run.
+                self.stream_started = False
+
+                while not self.stop_me and not self._stop_event.is_set():
+                    self._reconnect_attempt_count += 1
+                    downtime = time.time() - float(self._reconnect_first_failure_ts)
+
+                    if self._reconnect_attempt_count > self.reconnect_attempts or \
+                            downtime > self.reconnect_max_downtime_seconds:
+                        if not self._irrecoverable_signaled:
+                            self._irrecoverable_signaled = True
+                            reason = "reconnect budget exceeded"
+                            try:
+                                self.irrecoverable_callback(
+                                    self.stream_type,
+                                    reason,
+                                    (self._last_close_stream_key or "unknown"),
+                                    self._last_close_status_code,
+                                    self._last_close_msg,
+                                    int(self._reconnect_attempt_count),
+                                    float(downtime),
+                                )
+                            except Exception:
+                                log_for_level(self.logger, logging.ERROR,
+                                              "Error while invoking irrecoverable_callback", exc_info=True)
+                        break
+
+                    delay = self.reconnect_base_delay_seconds * (
+                            self.reconnect_backoff_factor ** max(0, self._reconnect_attempt_count - 1)
+                    )
+                    if self.reconnect_jitter_seconds and self.reconnect_jitter_seconds > 0:
+                        delay = max(
+                            0.0,
+                            delay + random.uniform(-self.reconnect_jitter_seconds, self.reconnect_jitter_seconds)
+                        )
+
+                    log_for_level(
+                        self.logger,
+                        logging.INFO,
+                        f"Reconnect attempt {self._reconnect_attempt_count}/{self.reconnect_attempts} in {delay:.2f}s",
                     )
 
-                log_for_level(
-                    self.logger,
-                    logging.INFO,
-                    f"Reconnect attempt {self._reconnect_attempt_count}/{self.reconnect_attempts} in {delay:.2f}s",
-                )
+                    self._stop_event.wait(delay)
+                    if self.stop_me or self._stop_event.is_set():
+                        break
 
-                self._stop_event.wait(delay)
-                if self.stop_me or self._stop_event.is_set():
-                    return
+                    try:
+                        # Stop existing streams without marking the whole client as shutting down.
+                        self._stop_streams_for_restart()
+                        self.stream_started = False
 
-                try:
-                    # Stop existing streams (best-effort).
-                    self.stop()
+                        # Do NOT clear session ids: reuse within TTL; refresh happens lazily in handle_open.
+                        self.restart_streams()
 
-                    # Do NOT blindly clear session ids. We want to reuse session ids obtained within TTL.
-                    # Expired session ids will be refreshed lazily in handle_open() via the TTL check.
-
-                    self.restart_streams()
-
-                    # Reset reconnect state after successful restart.
-                    self._reconnect_first_failure_ts = None
-                    self._reconnect_attempt_count = 0
-                    self._irrecoverable_signaled = False
-                    return
-                except Exception as e:
-                    log_for_level(self.logger, logging.WARNING, "Reconnect attempt failed", exc_info=e)
-        finally:
-            with self._reconnect_lock:
-                self._reconnect_in_progress = False
-
+                        # Successful restart: reset counters.
+                        self._reconnect_first_failure_ts = None
+                        self._reconnect_attempt_count = 0
+                        self._irrecoverable_signaled = False
+                        break
+                    except Exception as e:
+                        log_for_level(self.logger, logging.WARNING, "Reconnect attempt failed", exc_info=e)
+                        continue
+            finally:
+                with self._reconnect_lock:
+                    self._reconnect_in_progress = False
