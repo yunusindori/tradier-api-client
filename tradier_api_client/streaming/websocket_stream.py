@@ -123,7 +123,10 @@ class StreamListener(ApplicationThread):
         try:
             self.app.run_forever()
         except Exception as e:
-            self.logger.exception(msg=f"Disconnect from {self.url}", exc_info=e)
+            self.logger.exception(msg=f"Disconnected from {self.url}", exc_info=e)
+            self.stop()
+            self.on_disconnect_callback(close_status_code=None,
+                                        close_msg=str(e)) if self.on_disconnect_callback else None
 
     def stop(self):
         """
