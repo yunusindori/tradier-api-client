@@ -119,12 +119,11 @@ class StreamListener(ApplicationThread):
         """
         The normal run method
         """
-        while not self.stop_me:
-            # noinspection PyBroadException
-            try:
-                self.app.run_forever()
-            except Exception as e:
-                self.logger.exception(msg=f"Disconnect from {self.url}", exc_info=e)
+        # noinspection PyBroadException
+        try:
+            self.app.run_forever()
+        except Exception as e:
+            self.logger.exception(msg=f"Disconnect from {self.url}", exc_info=e)
 
     def stop(self):
         """

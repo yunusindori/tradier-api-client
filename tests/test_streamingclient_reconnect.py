@@ -45,6 +45,15 @@ def _make_client(*, stream_type: str, irrecoverable_callback: Mock) -> Streaming
     client.stop_me = False
     client.stream_started = True
 
+    # New reconnect-worker fields
+    client._reconnect_thread = None
+    client._reconnect_requested = threading.Event()
+
+    # Last close context used by worker
+    client._last_close_stream_key = None
+    client._last_close_status_code = None
+    client._last_close_msg = None
+
     # Events streams used for session reset (a dict of dicts)
     client.events_streams = {
         "A1": {"session_id": "s1", "session_id_last_updated": 1.0},
@@ -91,6 +100,13 @@ def test_handle_close_reconnect_success_resets_session_ids():
 
     client.handle_close("A1", close_status_code=1000, close_msg="bye")
 
+    # Trigger worker and wait a moment for it to call restart_streams.
+    client._reconnect_requested.set()
+    for _ in range(50):
+        if client.restart_streams.call_count:
+            break
+        threading.Event().wait(0.01)
+
     # Session ids preserved (may be reused within TTL)
     assert client.events_streams["A1"]["session_id"] == "s1"
     assert client.events_streams["A2"]["session_id"] == "s2"
@@ -114,8 +130,13 @@ def test_handle_close_calls_irrecoverable_after_budget_exceeded():
 
     client.handle_close("A1", close_status_code=1000, close_msg="bye")
 
-    # reconnect_attempts=2, code checks ">" so it should attempt 3 times then signal irrecoverable.
-    # We don't assert the exact attempt count from outside; just ensure callback called once.
+    # Trigger worker and wait for irrecoverable to fire.
+    client._reconnect_requested.set()
+    for _ in range(200):
+        if cb.call_count:
+            break
+        threading.Event().wait(0.01)
+
     assert cb.call_count == 1
     args = cb.call_args[0]
     assert args[0] == "market"  # stream_type
@@ -165,16 +186,20 @@ def test_handle_close_is_single_flight_guarded():
     t2 = threading.Thread(target=client.handle_close, args=("A1", 1000, "bye"), daemon=True)
 
     t1.start()
-    # Give t1 a moment to acquire the reconnect lock and enter the restart.
-    client._stop_event.wait(0.05)
     t2.start()
 
-    # Allow the blocking restart to finish.
+    # Trigger worker and allow the blocking restart to finish.
+    client._reconnect_requested.set()
     gate.set()
 
     t1.join(timeout=2)
     t2.join(timeout=2)
 
-    # Only the first close handler should proceed into restart.
+    # Wait briefly for worker to start the restart.
+    for _ in range(50):
+        if client.restart_streams.call_count:
+            break
+        threading.Event().wait(0.01)
+
     assert client.restart_streams.call_count == 1
     cb.assert_not_called()
