@@ -18,3 +18,5 @@ tests/real_data.py
 /instruments.csv
 /.github/account_event_publisher.log
 /.github/streaming_reconnect_troubleshooting.md
+__pycache__/
+**/__pycache__/**
