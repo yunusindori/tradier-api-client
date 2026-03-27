@@ -5,7 +5,7 @@ import logging
 import os
 import random
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from multiprocessing import AuthenticationError
 from time import sleep
 from typing import Optional, Any, Dict, Union, TypedDict
@@ -21,8 +21,9 @@ from ..helper_functions import log_for_level
 
 # noinspection PyMissingOrEmptyDocstring
 class RateLimit(TypedDict):
-    used: int
-    available: int
+    allowed: Optional[int]
+    used: Optional[int]
+    available: Optional[int]
     expiry: Optional[int]
     expiry_dt: Optional[datetime]
 
@@ -60,6 +61,9 @@ class RestClient:
 
     You can override `attempts`, `delay_seconds`, or `timeout` per call.
     """
+    RATE_LIMIT_STANDARD = "standard"
+    RATE_LIMIT_MARKET_DATA = "market_data"
+    RATE_LIMIT_TRADING = "trading"
 
     def __init__(
             self, base_url, api_key=None, account_number=None, api_key_env_prop=None,
@@ -100,8 +104,8 @@ class RestClient:
             self.api_key = os.environ.get(api_key_env_prop)
         if not self.account_number and account_id_env_prop:
             self.account_number = os.environ.get(account_id_env_prop)
-        self.authenticated = self.api_key is not None
-        if not self.authenticated:
+        self.is_authenticated = self.api_key is not None
+        if not self.is_authenticated:
             raise Exception("Set the api_key to environment or pass as a param to the constructor")
 
         self.http_base_url = base_url
@@ -117,15 +121,26 @@ class RestClient:
         X-Ratelimit-Available: 119
         X-Ratelimit-Expiry: 1369168800001
         """
-        self.rate_limit: RateLimit = {
-            "used": 0,
-            "available": 200,
-            "expiry": None,
-            "expiry_dt": None
+        self.rate_limits: Dict[str, RateLimit] = {
+            self.RATE_LIMIT_STANDARD: self._new_rate_limit_state(),
+            self.RATE_LIMIT_MARKET_DATA: self._new_rate_limit_state(),
+            self.RATE_LIMIT_TRADING: self._new_rate_limit_state(),
         }
+        self.rate_limit: RateLimit = self._new_rate_limit_state()
+        self.last_rate_limit_bucket: Optional[str] = None
         self.enc_dec = EncDec()
         if not self.account_number:
             self.account_number = account_number or self.__get_account_number()
+
+    @staticmethod
+    def _new_rate_limit_state() -> RateLimit:
+        return {
+            "allowed": None,
+            "used": None,
+            "available": None,
+            "expiry": None,
+            "expiry_dt": None,
+        }
 
     # noinspection PyMethodMayBeStatic
     def load_properties_to_env(self, file_path):
@@ -191,7 +206,7 @@ class RestClient:
         if params is not None and data is not None:
             raise Exception("Only one of params and data can be passed.")
 
-        if not self.authenticated:
+        if not self.is_authenticated:
             raise AuthenticationError(
                 "Unauthenticated request to private endpoint. If you wish to access private endpoints, "
                 "you must provide your API key and secret "
@@ -223,22 +238,61 @@ class RestClient:
         """
         pass
 
-    def _can_request(self):
-        from datetime import datetime, timezone
-        rl = self.rate_limit
+    def _get_rate_limit_bucket(self, http_method, url_path: str) -> str:
+        method = str(http_method or "").lower()
+        path = f"/{str(url_path or '').lstrip('/')}"
+
+        if path.startswith("/beta/markets") or path.startswith("/markets"):
+            return self.RATE_LIMIT_MARKET_DATA
+
+        is_order_path = path.startswith("/accounts/") and "/orders" in path
+        is_order_path = is_order_path or path.startswith("/orders")
+        if is_order_path and method in {"post", "put", "delete", "patch"}:
+            return self.RATE_LIMIT_TRADING
+
+        return self.RATE_LIMIT_STANDARD
+
+    def _get_rate_limit_state(self, bucket_name: str) -> RateLimit:
+        if bucket_name not in self.rate_limits:
+            self.rate_limits[bucket_name] = self._new_rate_limit_state()
+        return self.rate_limits[bucket_name]
+
+    @staticmethod
+    def _to_int(value):
+        try:
+            return int(value) if value is not None else None
+        except Exception:
+            return None
+
+    def _can_request(self, bucket_name: str):
+        rl = self._get_rate_limit_state(bucket_name)
         used = rl.get("used")
+        allowed = rl.get("allowed")
         available = rl.get("available")
         expiry = rl.get("expiry")
         if expiry is not None and isinstance(expiry, int):
             now = int(datetime.now(timezone.utc).timestamp())
-            if now > int(expiry):
+            if now >= int(expiry):
                 return True
-        if used is None or available is None:
-            return False
+
         try:
-            return (int(available) - int(used)) >= 5
+            if available is not None:
+                return int(available) > 0
+            if allowed is not None and used is not None:
+                return (int(allowed) - int(used)) > 0
         except Exception:
-            return False
+            return True
+        return True
+
+    def _rate_limit_exceeded_message(self, bucket_name: str) -> str:
+        rl = self._get_rate_limit_state(bucket_name)
+        expiry_dt = rl.get("expiry_dt")
+        if expiry_dt is not None:
+            return f"Rate limit exhausted for '{bucket_name}' requests until {expiry_dt.isoformat()}"
+        expiry = rl.get("expiry")
+        if expiry is not None:
+            return f"Rate limit exhausted for '{bucket_name}' requests until {expiry}"
+        return f"Rate limit exhausted for '{bucket_name}' requests"
 
     def _should_retry_http(self, response: requests.Response) -> bool:
         """Return True if the HTTP response is retryable (transient)."""
@@ -304,10 +358,11 @@ class RestClient:
         :param delay_seconds: Override instance base delay.
         """
         url = f"{self.http_base_url}{url_path}"
+        rate_limit_bucket = self._get_rate_limit_bucket(http_method, url_path)
 
         log_for_level(self.logger, logging.DEBUG, f"Sending {http_method} request to {url}")
-        if not self._can_request():
-            raise self.RateLimitExceeded("Rate limit: need 5-call headroom or wait for expiry")
+        if not self._can_request(rate_limit_bucket):
+            raise self.RateLimitExceeded(self._rate_limit_exceeded_message(rate_limit_bucket))
 
         attempts_allowed = int(attempts) if attempts is not None else int(getattr(self, 'retry_attempts', 1) or 1)
         attempts_allowed = max(1, attempts_allowed)
@@ -339,6 +394,7 @@ class RestClient:
                 log_for_level(self.logger, logging.DEBUG, f"Response Status Code: {response.status_code}")
                 log_for_level(self.logger, logging.DEBUG, f"Response Headers: {response.headers}")
                 log_for_level(self.logger, logging.DEBUG, f"Response Content: {response.text}")
+                self.update_rate_limit(response, bucket_name=rate_limit_bucket)
 
                 # Raise on bad responses, but allow retries for transient statuses.
                 try:
@@ -355,7 +411,6 @@ class RestClient:
                     raise
 
                 # Success path
-                self.update_rate_limit(response)
                 log_for_level(self.logger, logging.DEBUG, f"Raw response: {response.json()}")
                 return {**response.json(), 'client_timestamp': client_timestamp}
 
@@ -378,44 +433,41 @@ class RestClient:
             self.handle_exception(last_response)
         return None
 
-    def update_rate_limit(self, response):
+    def update_rate_limit(self, response, bucket_name: Optional[str] = None):
         """Update `self.rate_limit` using rate-limit headers if present.
 
         :param response: `requests.Response`
         """
+        bucket_name = bucket_name or self.last_rate_limit_bucket or self.RATE_LIMIT_STANDARD
         headers = getattr(response, "headers", {}) or {}
+        allowed = headers.get("X-Ratelimit-Allowed")
         used = headers.get("X-Ratelimit-Used")
         available = headers.get("X-Ratelimit-Available")
         expiry_raw = headers.get("X-Ratelimit-Expiry")
-        if used is None and available is None and expiry_raw is None:
+        if allowed is None and used is None and available is None and expiry_raw is None:
             return
 
-        def to_int(x):
-            """
-            Safely convert to int.
-            :param x:
-            :return:
-            """
-            try:
-                return int(x) if x is not None else None
-            except Exception:
-                return None
+        rate_limit = self._get_rate_limit_state(bucket_name)
 
+        if allowed is not None:
+            rate_limit["allowed"] = self._to_int(allowed)
         if used is not None:
-            self.rate_limit["used"] = to_int(used)
+            rate_limit["used"] = self._to_int(used)
         if available is not None:
-            self.rate_limit["available"] = to_int(available)
+            rate_limit["available"] = self._to_int(available)
         if expiry_raw is not None:
             try:
                 num: int = int(expiry_raw)
                 if num > 10 ** 12:
                     num //= 1000
-                self.rate_limit["expiry"] = num
-                from datetime import datetime, timezone
-                self.rate_limit["expiry_dt"] = datetime.fromtimestamp(num)
+                rate_limit["expiry"] = num
+                rate_limit["expiry_dt"] = datetime.fromtimestamp(num, tz=timezone.utc)
             except Exception:
-                self.rate_limit["expiry"] = None
-                self.rate_limit["expiry_dt"] = None
+                rate_limit["expiry"] = None
+                rate_limit["expiry_dt"] = None
+
+        self.last_rate_limit_bucket = bucket_name
+        self.rate_limit = dict(rate_limit)
         # print(f"Account id: {self.account_number}, Updated rate limit: {self.rate_limit}")
 
     def get(
@@ -602,7 +654,7 @@ class RestClient:
 
     def authenticated(self):
         """Check if API key is present"""
-        return self.api_key is not None
+        return bool(self.is_authenticated)
 
     def get_user_profile(self, api_key=None):
         """Get User Profile"""
@@ -670,12 +722,7 @@ class RestClient:
                 'page': page,
                 'includeTags': include_tags
             }
-            response = None
-            try:
-                response = self.get(path, params=params, retry_allowed=retry)
-            except self.RateLimitExceeded as e:
-                if not done:
-                    continue
+            response = self.get(path, params=params, retry_allowed=retry)
 
             if response and response.get('orders') and isinstance(response.get('orders'), dict) and response.get(
                     "orders").get('order') is not None:
@@ -683,7 +730,7 @@ class RestClient:
                 if isinstance(items, list):
                     order_list.extend(items)
                 elif isinstance(items, dict):
-                    order_list.append([items])
+                    order_list.append(items)
                 if response.get('orders').get('total_pages') and response.get('orders').get('total_pages') > page:
                     page += 1
                 else:
@@ -953,7 +1000,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_corporate_calendars(self, symbols: list):
         """Get detailed corporate actions of companies"""
@@ -961,7 +1008,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_dividends(self, symbols: list):
         """Get dividends given out by companies"""
@@ -969,7 +1016,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_corporate_actions(self, symbols: list):
         """Get corporate actions taken by companies"""
@@ -977,7 +1024,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_ratios(self, symbols: list):
         """Get fundamental ratios of companies on various dates """
@@ -985,7 +1032,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_financial_reports(self, symbols: list):
         """Get financial filings and reports of copmanies"""
@@ -993,7 +1040,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_price_statistics(self, symbols: list):
         """Get price statistics of companies"""
@@ -1001,7 +1048,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def __get_account_number(self):
         """
@@ -1009,7 +1056,7 @@ class RestClient:
         :return:
         """
         if not self.api_key:
-            raise "API Key not set"
+            raise RuntimeError("API Key not set")
         account_details = self.get_user_profile()
         if account_details and account_details.get('profile') and account_details.get('profile').get('account'):
             account = account_details.get('profile').get('account')
@@ -1038,7 +1085,7 @@ class RestClient:
         import json
         log_for_level(self.logger, logging.DEBUG, f"Sending order payload: {json.dumps(form)}")
         headers = {'Authorization': f'Bearer {self.api_key}'}
-        r = self.prepare_and_send_request("post", path, data=form, headers=headers)
+        r = self.prepare_and_send_request("post", path, data=form, headers=headers, timeout=timeout)
         return r
 
 
