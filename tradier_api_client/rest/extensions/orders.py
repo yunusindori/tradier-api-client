@@ -143,7 +143,6 @@ class OrderWrapper:
 
         # Submit
         order_response = self.rest_client.place_order(order, tag=tag)
-        print(order_response)
         return order_response
 
     def place_limit_order(

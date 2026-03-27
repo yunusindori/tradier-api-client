@@ -4,7 +4,7 @@ Python client for the Tradier Brokerage API (REST) plus optional streaming helpe
 
 This repo is intended to give you a lightweight, script-friendly way to call Tradier endpoints (quotes, options, orders, account data) using a single `RestClient`.
 
-> Note: Some examples below are adapted from `tests/real_data.py` which is intended for *local* use with a real API key. Don’t commit keys.
+> Note: Some examples below are adapted from `tests/real_data.py` which is intended for _local_ use with a real API key. Don’t commit keys.
 
 ---
 
@@ -149,7 +149,7 @@ order_request = equity_limit(
     duration="gtc",
 )
 
-resp = client.place_order(client.account_number, order_request)
+resp = client.place_order(order_request)
 print(resp)
 ```
 
@@ -175,10 +175,10 @@ print(orders)
 
 If you want real\-time market data, use `StreamingClient` (websocket streaming). This is optional; the REST client works without it.
 
-The `StreamingClient` constructor takes in the main API key that you also use REST calls. Additional API keys and account numbers are meant for 
+The `StreamingClient` constructor takes in the main API key that you also use REST calls. Additional API keys and account numbers are meant for
 advanced and serious trading.
 
-The `StreamingClient` instance for `markert` data streaming takes a list of symbols and event types in the start_listening call. 
+The `StreamingClient` instance for market data streaming takes a list of symbols and event types in the `start_listening` call.
 
 ### Authentication
 
@@ -196,7 +196,7 @@ from tradier_api_client import RestClient
 from tradier_api_client.streaming import StreamingClient  # adjust if your module path differs
 
 def on_message(msg: dict) -> None:
-    # The payload shape depends on the event type (quotes, trades, etc.)
+    # msg is the decoded JSON payload from the websocket
     print(msg)
 
 client = StreamingClient(main_api_key=os.environ.get("API_KEY"),
@@ -210,6 +210,7 @@ client.stop()
 ```
 
 ---
+
 ## Running tests (local repo)
 
 This project includes tests/integration scripts under `tests/`.

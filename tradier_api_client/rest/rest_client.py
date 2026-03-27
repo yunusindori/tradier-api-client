@@ -104,8 +104,8 @@ class RestClient:
             self.api_key = os.environ.get(api_key_env_prop)
         if not self.account_number and account_id_env_prop:
             self.account_number = os.environ.get(account_id_env_prop)
-        self.authenticated = self.api_key is not None
-        if not self.authenticated:
+        self.is_authenticated = self.api_key is not None
+        if not self.is_authenticated:
             raise Exception("Set the api_key to environment or pass as a param to the constructor")
 
         self.http_base_url = base_url
@@ -206,7 +206,7 @@ class RestClient:
         if params is not None and data is not None:
             raise Exception("Only one of params and data can be passed.")
 
-        if not self.authenticated:
+        if not self.is_authenticated:
             raise AuthenticationError(
                 "Unauthenticated request to private endpoint. If you wish to access private endpoints, "
                 "you must provide your API key and secret "
@@ -654,7 +654,7 @@ class RestClient:
 
     def authenticated(self):
         """Check if API key is present"""
-        return self.api_key is not None
+        return bool(self.is_authenticated)
 
     def get_user_profile(self, api_key=None):
         """Get User Profile"""
@@ -730,7 +730,7 @@ class RestClient:
                 if isinstance(items, list):
                     order_list.extend(items)
                 elif isinstance(items, dict):
-                    order_list.append([items])
+                    order_list.append(items)
                 if response.get('orders').get('total_pages') and response.get('orders').get('total_pages') > page:
                     page += 1
                 else:
@@ -1000,7 +1000,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_corporate_calendars(self, symbols: list):
         """Get detailed corporate actions of companies"""
@@ -1008,7 +1008,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_dividends(self, symbols: list):
         """Get dividends given out by companies"""
@@ -1016,7 +1016,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_corporate_actions(self, symbols: list):
         """Get corporate actions taken by companies"""
@@ -1024,7 +1024,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_ratios(self, symbols: list):
         """Get fundamental ratios of companies on various dates """
@@ -1032,7 +1032,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_financial_reports(self, symbols: list):
         """Get financial filings and reports of copmanies"""
@@ -1040,7 +1040,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def get_price_statistics(self, symbols: list):
         """Get price statistics of companies"""
@@ -1048,7 +1048,7 @@ class RestClient:
         params = {
             'symbols': ",".join(symbols)
         }
-        self.get(path, params=params)
+        return self.get(path, params=params)
 
     def __get_account_number(self):
         """
@@ -1056,7 +1056,7 @@ class RestClient:
         :return:
         """
         if not self.api_key:
-            raise "API Key not set"
+            raise RuntimeError("API Key not set")
         account_details = self.get_user_profile()
         if account_details and account_details.get('profile') and account_details.get('profile').get('account'):
             account = account_details.get('profile').get('account')
@@ -1085,7 +1085,7 @@ class RestClient:
         import json
         log_for_level(self.logger, logging.DEBUG, f"Sending order payload: {json.dumps(form)}")
         headers = {'Authorization': f'Bearer {self.api_key}'}
-        r = self.prepare_and_send_request("post", path, data=form, headers=headers)
+        r = self.prepare_and_send_request("post", path, data=form, headers=headers, timeout=timeout)
         return r
 
 
