@@ -12,7 +12,12 @@ def is_authenticated():
     def decorator(method):
         @functools.wraps(method)
         def wrapper(self, *args, **kwargs):
-            if not getattr(self, "authenticated", None):
+            auth_state = getattr(self, "is_authenticated", None)
+            if auth_state is None:
+                auth_state = getattr(self, "authenticated", None)
+                if callable(auth_state):
+                    auth_state = auth_state()
+            if not auth_state:
                 raise Exception("API key is not set, API call will fail")
             return method(self, *args, **kwargs)
 
