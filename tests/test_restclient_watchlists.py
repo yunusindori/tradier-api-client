@@ -14,6 +14,7 @@ def test_get_watchlists_routes_to_collection_get(monkeypatch, client):
     def fake_get(path, params=None, headers=None, retry_allowed=False, attempts=None, delay_seconds=None, timeout=None):
         captured["path"] = path
         captured["retry_allowed"] = retry_allowed
+        captured["timeout"] = timeout
         return {"watchlists": {"watchlist": []}}
 
     monkeypatch.setattr(client, "get", fake_get)
@@ -24,6 +25,7 @@ def test_get_watchlists_routes_to_collection_get(monkeypatch, client):
     assert captured == {
         "path": "/watchlists",
         "retry_allowed": True,
+        "timeout": 5.0,
     }
 
 
@@ -35,6 +37,7 @@ def test_create_watchlist_posts_name_and_symbols(monkeypatch, client):
         captured["path"] = path
         captured["data"] = data
         captured["retry_allowed"] = retry_allowed
+        captured["timeout"] = timeout
         return {"watchlist": {"id": "growth"}}
 
     monkeypatch.setattr(client, "post", fake_post)
@@ -46,6 +49,7 @@ def test_create_watchlist_posts_name_and_symbols(monkeypatch, client):
         "path": "/watchlists",
         "data": {"name": "Growth", "symbols": "AAPL,MSFT"},
         "retry_allowed": True,
+        "timeout": 5.0,
     }
 
 
@@ -55,6 +59,7 @@ def test_get_watchlist_routes_to_resource_get(monkeypatch, client):
     def fake_get(path, params=None, headers=None, retry_allowed=False, attempts=None, delay_seconds=None, timeout=None):
         captured["path"] = path
         captured["retry_allowed"] = retry_allowed
+        captured["timeout"] = timeout
         return {"watchlist": {"id": "default"}}
 
     monkeypatch.setattr(client, "get", fake_get)
@@ -65,6 +70,7 @@ def test_get_watchlist_routes_to_resource_get(monkeypatch, client):
     assert captured == {
         "path": "/watchlists/default",
         "retry_allowed": False,
+        "timeout": 5.0,
     }
 
 
@@ -76,6 +82,7 @@ def test_update_watchlist_puts_name_and_optional_symbols(monkeypatch, client):
         captured["path"] = path
         captured["data"] = data
         captured["retry_allowed"] = retry_allowed
+        captured["timeout"] = timeout
         return {"watchlist": {"id": "default", "name": "Renamed"}}
 
     monkeypatch.setattr(client, "put", fake_put)
@@ -87,6 +94,7 @@ def test_update_watchlist_puts_name_and_optional_symbols(monkeypatch, client):
         "path": "/watchlists/default",
         "data": {"name": "Renamed", "symbols": None},
         "retry_allowed": True,
+        "timeout": 5.0,
     }
 
 
@@ -97,6 +105,7 @@ def test_delete_watchlist_routes_to_resource_delete(monkeypatch, client):
                     delay_seconds=None, timeout=None):
         captured["path"] = path
         captured["retry_allowed"] = retry_allowed
+        captured["timeout"] = timeout
         return {"watchlists": {"watchlist": []}}
 
     monkeypatch.setattr(client, "delete", fake_delete)
@@ -107,6 +116,7 @@ def test_delete_watchlist_routes_to_resource_delete(monkeypatch, client):
     assert captured == {
         "path": "/watchlists/default",
         "retry_allowed": True,
+        "timeout": 5.0,
     }
 
 
@@ -118,6 +128,7 @@ def test_add_symbols_to_watchlist_posts_symbol_csv(monkeypatch, client):
         captured["path"] = path
         captured["data"] = data
         captured["retry_allowed"] = retry_allowed
+        captured["timeout"] = timeout
         return {"watchlist": {"id": "default"}}
 
     monkeypatch.setattr(client, "post", fake_post)
@@ -129,6 +140,7 @@ def test_add_symbols_to_watchlist_posts_symbol_csv(monkeypatch, client):
         "path": "/watchlists/default/symbols",
         "data": {"symbols": "SPY,QQQ"},
         "retry_allowed": False,
+        "timeout": 5.0,
     }
 
 
@@ -139,6 +151,7 @@ def test_remove_symbol_from_watchlist_routes_to_symbol_delete(monkeypatch, clien
                     delay_seconds=None, timeout=None):
         captured["path"] = path
         captured["retry_allowed"] = retry_allowed
+        captured["timeout"] = timeout
         return {"watchlist": {"id": "default"}}
 
     monkeypatch.setattr(client, "delete", fake_delete)
@@ -149,4 +162,5 @@ def test_remove_symbol_from_watchlist_routes_to_symbol_delete(monkeypatch, clien
     assert captured == {
         "path": "/watchlists/default/symbols/AAPL",
         "retry_allowed": True,
+        "timeout": 5.0,
     }

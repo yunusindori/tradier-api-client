@@ -66,6 +66,7 @@ class StreamingClient:
             reconnect_max_downtime_seconds: float = 300.0,
             irrecoverable_callback=None,
             session_id_ttl_seconds: float = 270.0,
+            timeout: float = 5.0,
     ):
         """Create a StreamingClient.
 
@@ -117,6 +118,7 @@ class StreamingClient:
         self.reconnect_max_downtime_seconds = float(reconnect_max_downtime_seconds)
         self.irrecoverable_callback = irrecoverable_callback
         self.session_id_ttl_seconds = float(session_id_ttl_seconds)
+        self.timeout = float(timeout)
 
         # Reconnect state
         self._reconnect_lock = threading.Lock()
@@ -129,11 +131,11 @@ class StreamingClient:
                                     additional_account_ids, stream_type, events_destination, events_callback)
         self.NUM_SYMBOLS_PER_STREAM = 1200
         self.api_keys = [main_api_key]
-        self.rest_client = RestClient(base_url=base_url, api_key=self.api_keys[0], verbose=verbose)
+        self.rest_client = RestClient(base_url=base_url, api_key=self.api_keys[0], verbose=verbose, timeout=timeout)
         self.api_keys.extend([] if not additional_api_keys else additional_api_keys)
         if not main_account_id:
             log_for_level(self.logger, logging.DEBUG, "Getting main account id...")
-            profile = self.rest_client.get_user_profile(main_api_key)
+            profile = self.rest_client.get_user_profile(main_api_key, timeout=timeout)
             main_account_id = profile['profile']['account'][0]['account_number'] if \
                 isinstance(profile['profile']['account'], list) else \
                 profile['profile']['account']['account_number']
@@ -146,7 +148,7 @@ class StreamingClient:
             log_for_level(self.logger, logging.DEBUG, "Getting additional account ids...")
             for api_key in self.api_keys[1:]:
                 if api_key is not None and api_key.strip():
-                    profile = self.rest_client.get_user_profile(api_key)
+                    profile = self.rest_client.get_user_profile(api_key, timeout=timeout)
                     self.account_ids.append(profile['profile']['account'][0]['account_number'] if
                                             isinstance(profile['profile']['account'], list) else
                                             profile['profile']['account']['account_number'])
@@ -215,7 +217,7 @@ class StreamingClient:
         log_for_level(self.logger, logging.DEBUG, "Inputs validated...")
 
     @log_entry_exit(level=logging.INFO)
-    def start_listening(self, symbols: list = None, event_types: list = None):
+    def start_listening(self, symbols: list = None, event_types: list = None, timeout: float = 5.0):
         """
         Starts listening to account or market events depending on the type of the stream. If it's a market
         stream, list of symbols is mandatory. if events_types is not passed it will default to all events.
@@ -229,6 +231,7 @@ class StreamingClient:
         """
         if self.stream_started:
             raise Exception("Stream already started, use update to make changes to the stream")
+        self.timeout = float(timeout)
         self.events_streams = self.events_streams or {}
         try:
             # No background thread needs a new generation; keep just stop_event.
@@ -325,7 +328,7 @@ class StreamingClient:
         }
 
     @log_entry_exit(level=logging.INFO)
-    def restart_streams(self):
+    def restart_streams(self, timeout: float = 5.0):
         """
         Restart listening to market or account events.
 
@@ -338,10 +341,10 @@ class StreamingClient:
         # No maintenance thread to recreate.
         self.events_streams = None
         # If stream_type is account, symbols and events will be ignored.
-        self.start_listening(symbols=self.symbols_listened_to, event_types=self.event_types)
+        self.start_listening(symbols=self.symbols_listened_to, event_types=self.event_types, timeout=timeout)
         log_for_level(self.logger, logging.INFO, "Stream(s) restarted...")
 
-    def update(self, symbols=None, event_types=None):
+    def update(self, symbols=None, event_types=None, timeout: float = 5.0):
         """
         Only makes sense to call this method for a market stream since Tradier doesn't support event types other than
          order for account stream. It raises an exception if called for account stream type.
@@ -365,11 +368,12 @@ class StreamingClient:
         self.stop()
         self.symbols_listened_to = symbols
         self.event_types = event_types
+        self.timeout = float(timeout)
         log_for_level(self.logger, logging.INFO, "Re-starting stream(s)...")
-        self.restart_streams()
+        self.restart_streams(timeout=timeout)
 
     @log_entry_exit()
-    def handle_open(self, stream_key):
+    def handle_open(self, stream_key, timeout: float = 5.0):
         """Called by StreamListener when the websocket connection is opened.
 
         This method creates/refreshes a session id as needed and sends the initial subscription payload.
@@ -380,7 +384,8 @@ class StreamingClient:
         if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
             return
 
-        self.check_session_id_for_stream(stream_key)
+        timeout = getattr(self, 'timeout', timeout)
+        self.check_session_id_for_stream(stream_key, timeout=timeout)
         session_id = self.events_streams[stream_key]['session_id']
         if self.stream_type == 'account':
             initial_payload = self.build_account_stream_payload(events=['orders'], session_id=session_id)
@@ -419,17 +424,17 @@ class StreamingClient:
                     return
                 log_for_level(self.logger, logging.ERROR, "An error occurred while updating stream: ", exc_info=e)
 
-    def _get_session_id_from_server(self, api_key: str) -> str:
+    def _get_session_id_from_server(self, api_key: str, timeout: float = 5.0) -> str:
         """Get a new session id from the server.
 
         :param api_key: API key to use for creating the session.
         :return: Session id string.
         """
-        return self.rest_client.create_market_session(api_key)['stream'][
+        return self.rest_client.create_market_session(api_key, timeout=timeout)['stream'][
             'sessionid'] if self.stream_type == 'market' else \
-            self.rest_client.create_account_session(api_key)['stream']['sessionid']
+            self.rest_client.create_account_session(api_key, timeout=timeout)['stream']['sessionid']
 
-    def check_session_id(self):
+    def check_session_id(self, timeout: float = 5.0):
         """Ensure session ids exist for all streams.
 
         This does not refresh session ids opportunistically. It only creates missing session ids.
@@ -437,14 +442,15 @@ class StreamingClient:
         Note: The client no longer runs periodic session refresh in the background.
         """
         try:
+            timeout = getattr(self, 'timeout', timeout)
             if self.events_streams and isinstance(self.events_streams, dict) and len(self.events_streams.keys()) > 0:
                 log_for_level(self.logger, logging.INFO, "Checking session ids for all streams...")
                 for account_id in self.events_streams.keys():
-                    self.check_session_id_for_stream(account_id)
+                    self.check_session_id_for_stream(account_id, timeout=timeout)
         except Exception:
             log_for_level(self.logger, logging.WARNING, traceback.format_exc())
 
-    def check_session_id_for_stream(self, stream_key):
+    def check_session_id_for_stream(self, stream_key, timeout: float = 5.0):
         """Ensure a session id exists for a stream.
 
         Session ids are created only when missing/invalid. They are intentionally not rotated based
@@ -454,11 +460,12 @@ class StreamingClient:
         """
         if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
             return
+        timeout = getattr(self, 'timeout', timeout)
         stream_dict = self.events_streams[stream_key]
         if self._session_id_refresh_condition_met(stream_key, stream_dict):
             log_for_level(self.logger, logging.INFO, f"Getting a new session id for: {stream_key}...")
             api_key = self.account_id_to_api_key[stream_key]
-            stream_dict['session_id'] = self._get_session_id_from_server(api_key)
+            stream_dict['session_id'] = self._get_session_id_from_server(api_key, timeout=timeout)
             stream_dict['session_id_last_updated'] = time.time()
             log_for_level(self.logger, logging.INFO, f"Got new session id for: {stream_key}...")
 
@@ -519,24 +526,24 @@ class StreamingClient:
             payload['excludeAccounts'] = exclude_accounts
         return payload
 
-    def refresh_session_id(self):
+    def refresh_session_id(self, timeout: float = 5.0):
         """Deprecated: retained for backward compatibility.
 
         The client no longer refreshes session ids in a background thread. This method now only ensures
         session ids exist for currently configured streams.
         """
-        self.check_session_id()
+        self.check_session_id(timeout=timeout)
 
-    def keep_market_stream_alive(self):
+    def keep_market_stream_alive(self, timeout: float = 5.0):
         """Deprecated: retained for backward compatibility.
 
         There is no longer a background keep-alive thread. If you want to implement an app-level keepalive,
         call this method yourself (best-effort), or prefer websocket-native ping configuration.
         """
         if self.stream_type == 'market':
-            self._maybe_send_market_keepalive()
+            self._maybe_send_market_keepalive(timeout=timeout)
 
-    def _maybe_send_market_keepalive(self):
+    def _maybe_send_market_keepalive(self, timeout: float = 5.0):
         """Best-effort keep-alive for market streams.
 
         This method no longer triggers session rotation. It only attempts to send a ping-like message
@@ -549,12 +556,14 @@ class StreamingClient:
         if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
             return
 
+        timeout = getattr(self, 'timeout', timeout)
+
         for key, stream_dict in list(self.events_streams.items()):
             if not key or not stream_dict:
                 continue
             try:
                 # Only ensure we have a session id if missing; never rotate one here.
-                self.check_session_id_for_stream(key)
+                self.check_session_id_for_stream(key, timeout=timeout)
                 stream = stream_dict.get('stream')
                 if stream is not None and stream.is_running():
                     stream.send_ping(json.dumps(
@@ -849,7 +858,7 @@ class StreamingClient:
                         self.stream_started = False
 
                         # Do NOT clear session ids: reuse within TTL; refresh happens lazily in handle_open.
-                        self.restart_streams()
+                        self.restart_streams(timeout=getattr(self, 'timeout', 5.0))
 
                         # Successful restart: reset counters.
                         self._reconnect_first_failure_ts = None
