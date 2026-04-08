@@ -264,6 +264,16 @@ class RestClient:
         except Exception:
             return None
 
+    @staticmethod
+    def _symbols_to_csv(symbols):
+        if symbols is None:
+            return None
+        if isinstance(symbols, str):
+            return symbols
+        if isinstance(symbols, (list, tuple, set)):
+            return ",".join(str(symbol) for symbol in symbols if symbol is not None)
+        return str(symbols)
+
     def _can_request(self, bucket_name: str):
         rl = self._get_rate_limit_state(bucket_name)
         used = rl.get("used")
@@ -661,6 +671,52 @@ class RestClient:
         path = "/user/profile"
         headers = {'Authorization': f'Bearer {self.api_key}'} if not api_key else {'Authorization': f'Bearer {api_key}'}
         return self.get(path, headers=headers)
+
+    def get_watchlists(self, retry: bool = False):
+        """Get all watchlists for the authenticated user."""
+        path = "/watchlists"
+        return self.get(path, retry_allowed=retry)
+
+    def create_watchlist(self, name, symbols=None, retry: bool = False):
+        """Create a watchlist with an optional set of symbols."""
+        path = "/watchlists"
+        data = {
+            'name': name,
+            'symbols': self._symbols_to_csv(symbols)
+        }
+        return self.post(path, data=data, retry_allowed=retry)
+
+    def get_watchlist(self, watchlist_id, retry: bool = False):
+        """Get a specific watchlist by id."""
+        path = f"/watchlists/{watchlist_id}"
+        return self.get(path, retry_allowed=retry)
+
+    def update_watchlist(self, watchlist_id, name, symbols=None, retry: bool = False):
+        """Update a watchlist, replacing its name and symbol set."""
+        path = f"/watchlists/{watchlist_id}"
+        data = {
+            'name': name,
+            'symbols': self._symbols_to_csv(symbols)
+        }
+        return self.put(path, data=data, retry_allowed=retry)
+
+    def delete_watchlist(self, watchlist_id, retry: bool = False):
+        """Delete a watchlist by id."""
+        path = f"/watchlists/{watchlist_id}"
+        return self.delete(path, retry_allowed=retry)
+
+    def add_symbols_to_watchlist(self, watchlist_id, symbols, retry: bool = False):
+        """Add one or more symbols to an existing watchlist."""
+        path = f"/watchlists/{watchlist_id}/symbols"
+        data = {
+            'symbols': self._symbols_to_csv(symbols)
+        }
+        return self.post(path, data=data, retry_allowed=retry)
+
+    def remove_symbol_from_watchlist(self, watchlist_id, symbol, retry: bool = False):
+        """Remove a symbol from an existing watchlist."""
+        path = f"/watchlists/{watchlist_id}/symbols/{symbol}"
+        return self.delete(path, retry_allowed=retry)
 
     def get_balances(self, account_id, retry: bool = False):
         """Get account balances"""
