@@ -130,6 +130,38 @@ gain_loss = client.get_gain_loss(client.account_number)
 print(gain_loss)
 ```
 
+### 6) Watchlists
+
+```python
+# List all watchlists
+watchlists = client.get_watchlists()
+print(watchlists)
+
+# Create a watchlist
+created = client.create_watchlist("Tech Leaders", symbols=["AAPL", "MSFT", "NVDA"])
+print(created)
+
+# Get one watchlist
+watchlist = client.get_watchlist("tech-leaders")
+print(watchlist)
+
+# Replace the watchlist contents
+updated = client.update_watchlist("tech-leaders", "Tech Leaders", symbols=["AAPL", "MSFT", "META"])
+print(updated)
+
+# Add symbols
+added = client.add_symbols_to_watchlist("tech-leaders", ["AMD", "AVGO"])
+print(added)
+
+# Remove one symbol
+removed = client.remove_symbol_from_watchlist("tech-leaders", "META")
+print(removed)
+
+# Delete the watchlist
+deleted = client.delete_watchlist("tech-leaders")
+print(deleted)
+```
+
 ---
 
 ## Orders
