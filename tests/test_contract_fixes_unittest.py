@@ -86,6 +86,20 @@ class ContractFixesTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertEqual(seen["timeout"], 7.5)
 
+    def test_higher_level_methods_default_timeout_to_five(self):
+        client = RestClient("http://example", api_key="k", account_number="acct")
+        seen = {}
+
+        def fake_get(path, params=None, headers=None, retry_allowed=False, attempts=None, delay_seconds=None,
+                     timeout=None):
+            seen["timeout"] = timeout
+            return {"quotes": {"quote": []}}
+
+        client.get = fake_get
+        client.get_quotes(["AAPL"])
+
+        self.assertEqual(seen["timeout"], 5.0)
+
     def test_private_account_lookup_raises_runtime_error_without_api_key(self):
         client = RestClient.__new__(RestClient)
         client.api_key = None
