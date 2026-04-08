@@ -425,12 +425,12 @@ class OptionsWrapper:
     def __init__(self, rest_client: RestClient):
         self.rest_client = rest_client
 
-    def get_call_options_occ_symbols_list(self, underlying_symbol: str):
+    def get_call_options_occ_symbols_list(self, underlying_symbol: str, timeout: float = 5.0):
         """
         Get the list of OCC call options symbols for a given underlying symbol.
         :param underlying_symbol:
         """
-        response = self.rest_client.lookup_options_symbols(underlying_symbol)
+        response = self.rest_client.lookup_options_symbols(underlying_symbol, timeout=timeout)
         if response and 'symbols' in response and response['symbols'] and 'options' in response['symbols'][0] and \
                 response['symbols'][0]['options']:
             call_options_symbols = response['symbols'][0]['options']
@@ -439,12 +439,12 @@ class OptionsWrapper:
             return call_options_symbols
         return []
 
-    def get_put_options_occ_symbols_list(self, underlying_symbol: str):
+    def get_put_options_occ_symbols_list(self, underlying_symbol: str, timeout: float = 5.0):
         """
         Get the list of OCC put options symbols for a given underlying symbol.
         :param underlying_symbol:
         """
-        response = self.rest_client.lookup_options_symbols(underlying_symbol)
+        response = self.rest_client.lookup_options_symbols(underlying_symbol, timeout=timeout)
         if response and 'symbols' in response and response['symbols'] and 'options' in response['symbols'][0] and \
                 response['symbols'][0]['options']:
             call_options_symbols = response['symbols'][0]['options']

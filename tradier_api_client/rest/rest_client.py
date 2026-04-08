@@ -18,6 +18,8 @@ from tradier_api_client.enc_dec import EncDec
 from tradier_api_client.rest.models.orders_fixed import Order
 from ..helper_functions import log_for_level
 
+DEFAULT_TIMEOUT = 5.0
+
 
 # noinspection PyMissingOrEmptyDocstring
 class RateLimit(TypedDict):
@@ -67,7 +69,8 @@ class RestClient:
 
     def __init__(
             self, base_url, api_key=None, account_number=None, api_key_env_prop=None,
-            account_id_env_prop=None, config=None, verbose=False, extras: dict = None):
+            account_id_env_prop=None, config=None, verbose=False, extras: dict = None,
+            timeout: float = DEFAULT_TIMEOUT):
         """
         :param base_url: Tradier REST API base URL (e.g. https://sandbox.tradier.com/v1)
         :param api_key: Tradier API key (Bearer token)
@@ -130,7 +133,7 @@ class RestClient:
         self.last_rate_limit_bucket: Optional[str] = None
         self.enc_dec = EncDec()
         if not self.account_number:
-            self.account_number = account_number or self.__get_account_number()
+            self.account_number = account_number or self.__get_account_number(timeout=timeout)
 
     @staticmethod
     def _new_rate_limit_state() -> RateLimit:
@@ -646,92 +649,94 @@ class RestClient:
             log_for_level(self.logger, logging.ERROR, f"HTTP Error: {http_error_msg}")
             raise HTTPError(http_error_msg, response=response)
 
-    def create_account_session(self, api_key):
+    def create_account_session(self, api_key, timeout: float = DEFAULT_TIMEOUT):
         """Create account session id"""
         headers = {
             'Authorization': f'Bearer {api_key}',
         }
         path = f"/accounts/events/session"
-        return self.post(path, headers=headers, data={}, retry_allowed=True)
+        return self.post(path, headers=headers, data={}, retry_allowed=True, timeout=timeout)
 
-    def create_market_session(self, api_key):
+    def create_market_session(self, api_key, timeout: float = DEFAULT_TIMEOUT):
         """Create market events session"""
         headers = {
             'Authorization': f'Bearer {api_key}',
         }
         path = f"/markets/events/session"
-        return self.post(path, headers=headers, data={}, retry_allowed=True)
+        return self.post(path, headers=headers, data={}, retry_allowed=True, timeout=timeout)
 
     def authenticated(self):
         """Check if API key is present"""
         return bool(self.is_authenticated)
 
-    def get_user_profile(self, api_key=None):
+    def get_user_profile(self, api_key=None, timeout: float = DEFAULT_TIMEOUT):
         """Get User Profile"""
         path = "/user/profile"
         headers = {'Authorization': f'Bearer {self.api_key}'} if not api_key else {'Authorization': f'Bearer {api_key}'}
-        return self.get(path, headers=headers)
+        return self.get(path, headers=headers, timeout=timeout)
 
-    def get_watchlists(self, retry: bool = False):
+    def get_watchlists(self, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get all watchlists for the authenticated user."""
         path = "/watchlists"
-        return self.get(path, retry_allowed=retry)
+        return self.get(path, retry_allowed=retry, timeout=timeout)
 
-    def create_watchlist(self, name, symbols=None, retry: bool = False):
+    def create_watchlist(self, name, symbols=None, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Create a watchlist with an optional set of symbols."""
         path = "/watchlists"
         data = {
             'name': name,
             'symbols': self._symbols_to_csv(symbols)
         }
-        return self.post(path, data=data, retry_allowed=retry)
+        return self.post(path, data=data, retry_allowed=retry, timeout=timeout)
 
-    def get_watchlist(self, watchlist_id, retry: bool = False):
+    def get_watchlist(self, watchlist_id, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get a specific watchlist by id."""
         path = f"/watchlists/{watchlist_id}"
-        return self.get(path, retry_allowed=retry)
+        return self.get(path, retry_allowed=retry, timeout=timeout)
 
-    def update_watchlist(self, watchlist_id, name, symbols=None, retry: bool = False):
+    def update_watchlist(
+            self, watchlist_id, name, symbols=None, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Update a watchlist, replacing its name and symbol set."""
         path = f"/watchlists/{watchlist_id}"
         data = {
             'name': name,
             'symbols': self._symbols_to_csv(symbols)
         }
-        return self.put(path, data=data, retry_allowed=retry)
+        return self.put(path, data=data, retry_allowed=retry, timeout=timeout)
 
-    def delete_watchlist(self, watchlist_id, retry: bool = False):
+    def delete_watchlist(self, watchlist_id, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Delete a watchlist by id."""
         path = f"/watchlists/{watchlist_id}"
-        return self.delete(path, retry_allowed=retry)
+        return self.delete(path, retry_allowed=retry, timeout=timeout)
 
-    def add_symbols_to_watchlist(self, watchlist_id, symbols, retry: bool = False):
+    def add_symbols_to_watchlist(self, watchlist_id, symbols, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Add one or more symbols to an existing watchlist."""
         path = f"/watchlists/{watchlist_id}/symbols"
         data = {
             'symbols': self._symbols_to_csv(symbols)
         }
-        return self.post(path, data=data, retry_allowed=retry)
+        return self.post(path, data=data, retry_allowed=retry, timeout=timeout)
 
-    def remove_symbol_from_watchlist(self, watchlist_id, symbol, retry: bool = False):
+    def remove_symbol_from_watchlist(
+            self, watchlist_id, symbol, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Remove a symbol from an existing watchlist."""
         path = f"/watchlists/{watchlist_id}/symbols/{symbol}"
-        return self.delete(path, retry_allowed=retry)
+        return self.delete(path, retry_allowed=retry, timeout=timeout)
 
-    def get_balances(self, account_id, retry: bool = False):
+    def get_balances(self, account_id, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get account balances"""
         path = f"/accounts/{account_id}/balances"
-        return self.get(path, retry_allowed=retry)
+        return self.get(path, retry_allowed=retry, timeout=timeout)
 
-    def get_positions(self, account_id, retry: bool = False):
+    def get_positions(self, account_id, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get Account Positions"""
         path = f"/accounts/{account_id}/positions"
-        return self.get(path, retry_allowed=retry)
+        return self.get(path, retry_allowed=retry, timeout=timeout)
 
     def get_history(
             self, account_id, page=1, limit=10000, history_type: list = None, start: str = None,
             end: str = None, symbol: str = None,
-            exactMatch=True, api_key=None, retry: bool = False):
+            exactMatch=True, api_key=None, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """
         Get Account History
         See: https://documentation.tradier.com/brokerage-api/trading/get-account-history
@@ -753,14 +758,15 @@ class RestClient:
             params['end'] = end
         params['exactMatch'] = exactMatch
         headers = {'Authorization': f'Bearer {self.api_key}'} if not api_key else {'Authorization': f'Bearer {api_key}'}
-        return self.get(path, params=params, headers=headers, retry_allowed=retry)
+        return self.get(path, params=params, headers=headers, retry_allowed=retry, timeout=timeout)
 
-    def get_gain_loss(self, account_id, retry: bool = False):
+    def get_gain_loss(self, account_id, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get Current Gain Los"""
         path = f"/accounts/{account_id}/gainloss"
-        return self.get(path, retry_allowed=retry)
+        return self.get(path, retry_allowed=retry, timeout=timeout)
 
-    def get_orders(self, account_id, include_tags=True, retry: bool = False):
+    def get_orders(
+            self, account_id, include_tags=True, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get all orders for the market session of the present calendar day.
 
         Not to be used for historical orders.
@@ -778,7 +784,7 @@ class RestClient:
                 'page': page,
                 'includeTags': include_tags
             }
-            response = self.get(path, params=params, retry_allowed=retry)
+            response = self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
             if response and response.get('orders') and isinstance(response.get('orders'), dict) and response.get(
                     "orders").get('order') is not None:
@@ -795,7 +801,8 @@ class RestClient:
                 done = True
         return {'orders': {'order': order_list}}
 
-    def get_order(self, account_id, order_id, include_tags=True, retry: bool = False):
+    def get_order(
+            self, account_id, order_id, include_tags=True, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get an order's details.
 
         :param account_id: Account id.
@@ -807,11 +814,11 @@ class RestClient:
         params = {
             'includeTags': include_tags
         }
-        return self.get(path, params=params, retry_allowed=retry)
+        return self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
     def modify_order(
             self, account_id, order_id, order_type=None, duration=None, price=None, stop=None,
-            retry: bool = False):
+            retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Modify an order"""
         path = f"/accounts/{account_id}/orders/{order_id}"
         data = None
@@ -825,32 +832,33 @@ class RestClient:
                 data.update({'price': price})
             if stop:
                 data.update({'stop': stop})
-        return self.put(path, data=data, retry_allowed=retry)
+        return self.put(path, data=data, retry_allowed=retry, timeout=timeout)
 
-    def cancel_order(self, account_id=None, order_id=None, retry: bool = False):
+    def cancel_order(self, account_id=None, order_id=None, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Cancel an order"""
         path = f"/accounts/{account_id}/orders/{order_id}"
-        return self.delete(path, retry_allowed=retry)
+        return self.delete(path, retry_allowed=retry, timeout=timeout)
 
-    def get_quotes(self, symbols, greeks=False, retry: bool = False):
+    def get_quotes(self, symbols, greeks=False, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get quotes for symbols"""
         path = "/markets/quotes"
         params = {
             'symbols': symbols,
             'greeks': greeks
         }
-        return self.get(path, params=params, retry_allowed=retry)
+        return self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
-    def get_quotes_larger(self, symbols, greeks=False, retry: bool = False):
+    def get_quotes_larger(self, symbols, greeks=False, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get quotes via POST that supports larger set of symbols"""
         path = "/markets/quotes"
         data = {
             'symbols': symbols,
             'greeks': greeks
         }
-        return self.post(path, data=data, retry_allowed=retry)
+        return self.post(path, data=data, retry_allowed=retry, timeout=timeout)
 
-    def get_option_chains(self, symbol, expiration, greeks=False, retry: bool = False):
+    def get_option_chains(
+            self, symbol, expiration, greeks=False, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get options chains"""
         path = "/markets/options/chains"
         params = {
@@ -858,9 +866,10 @@ class RestClient:
             'expiration': expiration,
             'greeks': greeks
         }
-        return self.get(path, params=params, retry_allowed=retry)
+        return self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
-    def get_option_strikes(self, symbol, expiration, include_all_roots=True, retry: bool = False):
+    def get_option_strikes(
+            self, symbol, expiration, include_all_roots=True, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get options strikes"""
         path = "/markets/options/strikes"
         params = {
@@ -868,11 +877,11 @@ class RestClient:
             'expiration': expiration,
             'includeAllRoots': include_all_roots
         }
-        return self.get(path, params=params, retry_allowed=retry)
+        return self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
     def get_option_expirations(
             self, symbol, include_all_roots=True, strikes=False, contract_size=False,
-            expiration_type=False, retry: bool = False):
+            expiration_type=False, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get options expirations"""
         path = "/markets/options/expirations"
         params = {
@@ -882,11 +891,11 @@ class RestClient:
             'contractSize': contract_size,
             'expirationType': expiration_type
         }
-        return self.get(path, params=params, retry_allowed=retry)
+        return self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
     def lookup_option_symbols(
             self, symbol, includeAllRoots=True, strikes=True, contractSize=True,
-            expirationType=True, retry: bool = False):
+            expirationType=True, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get all options symbols for an underlying symbol"""
         path = "/markets/options/expirations"
         params = {
@@ -896,9 +905,11 @@ class RestClient:
             'contractSize': contractSize,
             'expirationType': expirationType
         }
-        return self.get(path, params=params, retry_allowed=retry)
+        return self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
-    def lookup_options_symbols(self, underlying, strike=None, expiration=None, option_type=None, retry: bool = False):
+    def lookup_options_symbols(
+            self, underlying, strike=None, expiration=None, option_type=None, retry: bool = False,
+            timeout: float = DEFAULT_TIMEOUT):
         """Get options symbols for an underlying symbol.
 
         :param underlying: Underlying symbol.
@@ -917,10 +928,11 @@ class RestClient:
             params.update({'expiration': expiration})
         if option_type:
             params.update({'type': option_type})
-        return self.prepare_and_send_request("get", path, params=params, retry_allowed=retry)
+        return self.prepare_and_send_request("get", path, params=params, retry_allowed=retry, timeout=timeout)
 
     def get_historical_quotes(
-            self, symbol, interval='daily', start=None, end=None, return_list=False):
+            self, symbol, interval='daily', start=None, end=None, return_list=False,
+            timeout: float = DEFAULT_TIMEOUT):
         """Get historical prices of a symbol"""
         path = "/markets/history"
         params = {
@@ -932,7 +944,7 @@ class RestClient:
             params.update({'start': start})
         if end:
             params.update({'end': end})
-        return self.convert_to_list(self.get(path, params=params), return_list)
+        return self.convert_to_list(self.get(path, params=params, timeout=timeout), return_list)
 
     # noinspection PyMethodMayBeStatic
     def convert_to_list(self, quotes_history, return_list):
@@ -956,7 +968,9 @@ class RestClient:
         else:
             return quotes_history
 
-    def get_time_sales(self, symbol, interval='tick', start=None, end=None, session_filter='all', retry: bool = False):
+    def get_time_sales(
+            self, symbol, interval='tick', start=None, end=None, session_filter='all', retry: bool = False,
+            timeout: float = DEFAULT_TIMEOUT):
         """Get short term interval based prices of a symbol.
 
         Check API docs for intervals and availability periods.
@@ -978,17 +992,17 @@ class RestClient:
             params.update({'start': start})
         if end:
             params.update({'end': end})
-        return self.get(path, params=params, retry_allowed=retry)
+        return self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
-    def get_etb_securities(self, retry: bool = False):
+    def get_etb_securities(self, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get list of stocks that can be shorted.
 
         :param retry: If True, retry transient failures based on the retry policy.
         """
         path = "/markets/etb"
-        return self.get(path, retry_allowed=retry)
+        return self.get(path, retry_allowed=retry, timeout=timeout)
 
-    def get_clock(self, delayed=False, retry: bool = False):
+    def get_clock(self, delayed=False, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get market clock and status.
 
         :param delayed: If True, request delayed clock.
@@ -998,9 +1012,9 @@ class RestClient:
         params = {
             'delayed': delayed
         }
-        return self.get(path, params=params, retry_allowed=retry)
+        return self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
-    def get_calendar(self, month=None, year=None, retry: bool = False):
+    def get_calendar(self, month=None, year=None, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get market trading calendar.
 
         :param month: Optional month.
@@ -1014,9 +1028,9 @@ class RestClient:
         if year:
             params = params or {}
             params.update({'year': year})
-        return self.get(path, params=params, retry_allowed=retry)
+        return self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
-    def get_markets_search(self, query, indexes=True, retry: bool = False):
+    def get_markets_search(self, query, indexes=True, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Get details of symbols and where they are traded.
 
         :param query: Search query.
@@ -1028,9 +1042,10 @@ class RestClient:
             'q': query,
             'indexes': indexes
         }
-        return self.get(path, params=params, retry_allowed=retry)
+        return self.get(path, params=params, retry_allowed=retry, timeout=timeout)
 
-    def get_markets_lookup(self, query=None, exchanges=None, types=None, retry: bool = False):
+    def get_markets_lookup(
+            self, query=None, exchanges=None, types=None, retry: bool = False, timeout: float = DEFAULT_TIMEOUT):
         """Lookup details of a symbol and where it's traded.
 
         Same as companies.
@@ -1048,72 +1063,72 @@ class RestClient:
             params.update({'exchanges': exchanges})
         if types:
             params.update({'types': types})
-        return self.get(path, params=params or None, retry_allowed=retry)
+        return self.get(path, params=params or None, retry_allowed=retry, timeout=timeout)
 
-    def get_company(self, symbols: list):
+    def get_company(self, symbols: list, timeout: float = DEFAULT_TIMEOUT):
         """Get details of companies"""
         path = "/beta/markets/fundamentals/company"
         params = {
             'symbols': ",".join(symbols)
         }
-        return self.get(path, params=params)
+        return self.get(path, params=params, timeout=timeout)
 
-    def get_corporate_calendars(self, symbols: list):
+    def get_corporate_calendars(self, symbols: list, timeout: float = DEFAULT_TIMEOUT):
         """Get detailed corporate actions of companies"""
         path = "/beta/markets/fundamentals/calendars"
         params = {
             'symbols': ",".join(symbols)
         }
-        return self.get(path, params=params)
+        return self.get(path, params=params, timeout=timeout)
 
-    def get_dividends(self, symbols: list):
+    def get_dividends(self, symbols: list, timeout: float = DEFAULT_TIMEOUT):
         """Get dividends given out by companies"""
         path = "/beta/markets/fundamentals/dividends"
         params = {
             'symbols': ",".join(symbols)
         }
-        return self.get(path, params=params)
+        return self.get(path, params=params, timeout=timeout)
 
-    def get_corporate_actions(self, symbols: list):
+    def get_corporate_actions(self, symbols: list, timeout: float = DEFAULT_TIMEOUT):
         """Get corporate actions taken by companies"""
         path = "/beta/markets/fundamentals/corporate_actions"
         params = {
             'symbols': ",".join(symbols)
         }
-        return self.get(path, params=params)
+        return self.get(path, params=params, timeout=timeout)
 
-    def get_ratios(self, symbols: list):
+    def get_ratios(self, symbols: list, timeout: float = DEFAULT_TIMEOUT):
         """Get fundamental ratios of companies on various dates """
         path = "/beta/markets/fundamentals/ratios"
         params = {
             'symbols': ",".join(symbols)
         }
-        return self.get(path, params=params)
+        return self.get(path, params=params, timeout=timeout)
 
-    def get_financial_reports(self, symbols: list):
+    def get_financial_reports(self, symbols: list, timeout: float = DEFAULT_TIMEOUT):
         """Get financial filings and reports of copmanies"""
         path = "/beta/markets/fundamentals/financials"
         params = {
             'symbols': ",".join(symbols)
         }
-        return self.get(path, params=params)
+        return self.get(path, params=params, timeout=timeout)
 
-    def get_price_statistics(self, symbols: list):
+    def get_price_statistics(self, symbols: list, timeout: float = DEFAULT_TIMEOUT):
         """Get price statistics of companies"""
         path = "/beta/markets/fundamentals/statistics"
         params = {
             'symbols': ",".join(symbols)
         }
-        return self.get(path, params=params)
+        return self.get(path, params=params, timeout=timeout)
 
-    def __get_account_number(self):
+    def __get_account_number(self, timeout: float = DEFAULT_TIMEOUT):
         """
         Get account id from the server using the API key and set it in the client
         :return:
         """
         if not self.api_key:
             raise RuntimeError("API Key not set")
-        account_details = self.get_user_profile()
+        account_details = self.get_user_profile(timeout=timeout)
         if account_details and account_details.get('profile') and account_details.get('profile').get('account'):
             account = account_details.get('profile').get('account')
             if isinstance(account, dict):
@@ -1122,7 +1137,8 @@ class RestClient:
                 return account_detail['account_number']
         return None
 
-    def place_order(self, order: Order, preview: bool = False, timeout: float = 15.0, tag=None) -> Dict[str, Any]:
+    def place_order(
+            self, order: Order, preview: bool = False, timeout: float = DEFAULT_TIMEOUT, tag=None) -> Dict[str, Any]:
         """
         A more organized variant of place_order that takes in an order object. Each order contains order legs.
 

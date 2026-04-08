@@ -14,7 +14,7 @@ class OrderWrapper:
 
     def place_close_bracket_order(
             self, symbol: str, quantity: float, tp_price: float, sl_price: float, duration: str = "day",
-            tag: str = None):
+            tag: str = None, timeout: float = 5.0):
 
         """
         Place a close bracket order (OCO): take-profit + stop order.
@@ -27,7 +27,7 @@ class OrderWrapper:
         """
         # Create OCO order combining take-profit and stop-loss as two legs
         order = oco_equity(symbol, quantity, take_profit=tp_price, stop_price=sl_price, duration=duration)
-        return self.rest_client.place_order(order=order, tag=tag)
+        return self.rest_client.place_order(order=order, tag=tag, timeout=timeout)
 
     def place_bracket_order(
             self,
@@ -45,7 +45,8 @@ class OrderWrapper:
             duration: str = "day",
             reference_price: float | None = None,  # required if base_type='market' (or if you want different ref)
             stop_type: str = "stop_limit",  # 'stop'|'stop_limit'
-            tag: str = None):
+            tag: str = None,
+            timeout: float = 5.0):
         """
         Place a bracket order (OTOCO): parent + take-profit child + stop(-limit) child.
 
@@ -142,12 +143,12 @@ class OrderWrapper:
         order = otoco_equity(parent_leg, tp_leg, sl_leg, klass="otoco")
 
         # Submit
-        order_response = self.rest_client.place_order(order, tag=tag)
+        order_response = self.rest_client.place_order(order, tag=tag, timeout=timeout)
         return order_response
 
     def place_limit_order(
             self, symbol: str, side: str, quantity: float, limit_price: float, duration: str = "day",
-            tag: str = None):
+            tag: str = None, timeout: float = 5.0):
         """
         Place a limit order.
         :param tag: User tag for correlating orders.
@@ -160,9 +161,11 @@ class OrderWrapper:
         """
         # Create a limit order
         order = equity_limit(symbol, side, quantity, limit_price, duration)
-        return self.rest_client.place_order(order=order, tag=tag)
+        return self.rest_client.place_order(order=order, tag=tag, timeout=timeout)
 
-    def place_market_order(self, symbol: str, side: str, quantity: float, duration: str = "day", tag: str = None):
+    def place_market_order(
+            self, symbol: str, side: str, quantity: float, duration: str = "day", tag: str = None,
+            timeout: float = 5.0):
         """
         Place a market order.
         :param tag:
@@ -174,10 +177,11 @@ class OrderWrapper:
         """
         # Create a market order
         order = equity_market(symbol, side, quantity, duration)
-        return self.rest_client.place_order(order=order, tag=tag)
+        return self.rest_client.place_order(order=order, tag=tag, timeout=timeout)
 
     def place_stop_order(
-            self, symbol: str, side: str, quantity: float, stop_price: float, duration: str = "day", tag: str = None):
+            self, symbol: str, side: str, quantity: float, stop_price: float, duration: str = "day",
+            tag: str = None, timeout: float = 5.0):
         """
         Place a stop order.
         :param symbol: Symbol for the order (equity).
@@ -193,11 +197,11 @@ class OrderWrapper:
             legs=[
                 OrderLeg(side=side, type="stop", quantity=quantity, symbol=symbol, duration=duration, stop=stop_price)]
         )
-        return self.rest_client.place_order(order=order, tag=tag)
+        return self.rest_client.place_order(order=order, tag=tag, timeout=timeout)
 
     def place_stop_limit_order(
             self, symbol: str, side: str, quantity: float, stop_price: float, limit_price: float,
-            duration: str = "day", tag: str = None):
+            duration: str = "day", tag: str = None, timeout: float = 5.0):
         """
         Place a stop-limit order.
         :param symbol: Symbol for the order (equity).
@@ -210,10 +214,11 @@ class OrderWrapper:
         """
         # Create a stop-limit order
         order = stop_limit(symbol, side, quantity, stop_price, limit_price, duration)
-        return self.rest_client.place_order(order=order, tag=tag)
+        return self.rest_client.place_order(order=order, tag=tag, timeout=timeout)
 
     def place_oto_order(
-            self, parent_order_leg: OrderLeg, child_order_legs: list[OrderLeg], duration: str = "day", tag: str = None):
+            self, parent_order_leg: OrderLeg, child_order_legs: list[OrderLeg], duration: str = "day",
+            tag: str = None, timeout: float = 5.0):
         """
         Place a One-Triggers-Other (OTO) order: a parent order that triggers one or more child orders.
         :param parent_order_leg: The parent order leg that triggers the child orders.
@@ -223,9 +228,11 @@ class OrderWrapper:
         """
         # Build OTO order
         order = oto_equity(parent_order_leg, *child_order_legs, klass="oto")
-        return self.rest_client.place_order(order=order, tag=tag)
+        return self.rest_client.place_order(order=order, tag=tag, timeout=timeout)
 
-    def place_combo_order(self, symbol: str, legs: list[OrderLeg], duration: str = "day", tag: str = None):
+    def place_combo_order(
+            self, symbol: str, legs: list[OrderLeg], duration: str = "day", tag: str = None,
+            timeout: float = 5.0):
         """
         Place a combo order: a multi-leg order (e.g., options spreads).
         :param symbol: The symbol to trade (usually for underlying of options or equities).
@@ -234,11 +241,11 @@ class OrderWrapper:
         :return: Response from the REST client.
         """
         order = Order(class_="combo", legs=legs, extras={"symbol": symbol, "duration": duration})
-        return self.rest_client.place_order(order=order, tag=tag)
+        return self.rest_client.place_order(order=order, tag=tag, timeout=timeout)
 
     def place_oco_order(
             self, symbol: str, quantity: float, tp_price: float, sl_price: float, duration: str = "day",
-            tag: str = None):
+            tag: str = None, timeout: float = 5.0):
         """
         Place a One-Cancels-Other (OCO) order: two orders, where fulfilling one cancels the other.
         :param symbol: Symbol for the order (equity).
@@ -249,7 +256,7 @@ class OrderWrapper:
         :return: Response from the REST client.
         """
         order = oco_equity(symbol, quantity, take_profit=tp_price, stop_price=sl_price, duration=duration)
-        return self.rest_client.place_order(order=order, tag=tag)
+        return self.rest_client.place_order(order=order, tag=tag, timeout=timeout)
 
     def place_trailing_stop_order(
             self, symbol: str, side: str, quantity: float, trail_percent: float, duration: str = "day",
@@ -268,7 +275,7 @@ class OrderWrapper:
 
     def place_option_spread_order(
             self, buy_symbol: str, sell_symbol: str, quantity: int, limit_price: float, duration: str = "day",
-            tag: str = None):
+            tag: str = None, timeout: float = 5.0):
         """
         Place an options spread order (vertical spread).
         :param buy_symbol: OCC symbol for the option to buy.
@@ -279,12 +286,12 @@ class OrderWrapper:
         :return: Response from the REST client.
         """
         order = option_vertical(buy_symbol, sell_symbol, quantity, limit_price, duration)
-        return self.rest_client.place_order(order=order, tag=tag)
+        return self.rest_client.place_order(order=order, tag=tag, timeout=timeout)
 
     def place_multi_leg_order(
             self, symbol, legs: list[OrderLeg], order_type='market', duration: str =
             "day",
-            tag: str = None):
+            tag: str = None, timeout: float = 5.0):
         """
         Place a multi-leg order (custom combinations of buys/sells for options or equities).
         :param legs: A list of order legs defining the multi-leg order.
@@ -295,11 +302,11 @@ class OrderWrapper:
         :return: Response from the REST client.
         """
         order = Order(symbol=symbol, class_="multileg", legs=legs, extras={"duration": duration}, type=order_type)
-        return self.rest_client.place_order(order=order, tag=tag)
+        return self.rest_client.place_order(order=order, tag=tag, timeout=timeout)
 
     def modify_existing_order(
             self, account_id: str, order_id: str, order_type: str = None, duration: str = None,
-            price: float = None, stop: float = None):
+            price: float = None, stop: float = None, timeout: float = 5.0):
         """
         Modify an existing order.
         :param account_id: Account ID where the order resides.
@@ -311,29 +318,29 @@ class OrderWrapper:
         :return: Response from the REST client.
         """
         return self.rest_client.modify_order(
-            account_id, order_id, order_type=order_type, duration=duration, price=price, stop=stop
+            account_id, order_id, order_type=order_type, duration=duration, price=price, stop=stop, timeout=timeout
         )
 
-    def cancel_order(self, account_id: str, order_id: str):
+    def cancel_order(self, account_id: str, order_id: str, timeout: float = 5.0):
         """
         Cancel an order.
         :param account_id: Account ID where the order resides.
         :param order_id: ID of the order to be canceled.
         :return: Response from the REST client.
         """
-        return self.rest_client.cancel_order(account_id, order_id)
+        return self.rest_client.cancel_order(account_id, order_id, timeout=timeout)
 
-    def cancel_all_oco_orders(self, account_id: str):
+    def cancel_all_oco_orders(self, account_id: str, timeout: float = 5.0):
         """
         Cancel all OCO orders in the account.
         :param account_id: Account ID.
         :return: Success message or REST client response.
         """
-        orders = self.rest_client.get_orders(account_id).get("orders", {}).get("order", [])
+        orders = self.rest_client.get_orders(account_id, timeout=timeout).get("orders", {}).get("order", [])
         oco_orders = [order for order in orders if order.get("class") == "oco"]
         results = []
         for oco_order in oco_orders:
-            results.append(self.cancel_order(account_id, oco_order.get("id")))
+            results.append(self.cancel_order(account_id, oco_order.get("id"), timeout=timeout))
         return results
 
 
