@@ -623,36 +623,42 @@ class StreamingClient:
         if self.stop_me or self._stop_event.is_set() or getattr(self, '_is_shutting_down', False):
             return
 
-        decoded_msg = msg
         if isinstance(msg, (str, bytes, bytearray)):
             try:
                 payload = msg.decode("utf-8") if isinstance(msg, (bytes, bytearray)) else msg
-                decoded_msg = json.loads(payload)
+                payload_lines = [line for line in payload.splitlines() if line.strip()]
+                if len(payload_lines) > 1:
+                    decoded_messages = [json.loads(line) for line in payload_lines]
+                else:
+                    decoded_messages = [json.loads(payload)]
             except (UnicodeDecodeError, json.JSONDecodeError):
                 log_for_level(self.logger, logging.ERROR, f"Failed to decode stream message as JSON: {msg}", exc_info=False)
                 return
+        else:
+            decoded_messages = [msg]
 
         log_for_level(self.logger, logging.DEBUG, f"Received message from listener with key: {stream_key}")
-        log_for_level(self.logger, logging.DEBUG, f"Message received: {decoded_msg}")
-        if isinstance(decoded_msg, dict) and 'error' in decoded_msg:
-            log_for_level(self.logger, logging.ERROR, f"Error message received from stream: {decoded_msg}")
-            self.stop()
-            return
-        self.events_streams[stream_key]['last_event_timestamp'] = time.time()
-        if self.events_destination:
-            log_for_level(self.logger, logging.DEBUG, "Sending message to destination...")
-            try:
-                self.events_destination.put(decoded_msg)
-            except Exception as e:
-                log_for_level(self.logger, logging.ERROR, "Failed to put message to the destination queue",
-                              exc_info=e)
-        else:
-            log_for_level(self.logger, logging.DEBUG, "Calling event callback for message...")
-            try:
-                self.events_callback(decoded_msg)
-            except Exception as e:
-                log_for_level(self.logger, logging.ERROR,
-                              "An error occurred when invoking the callback function", exc_info=e)
+        for decoded_msg in decoded_messages:
+            log_for_level(self.logger, logging.DEBUG, f"Message received: {decoded_msg}")
+            if isinstance(decoded_msg, dict) and 'error' in decoded_msg:
+                log_for_level(self.logger, logging.ERROR, f"Error message received from stream: {decoded_msg}")
+                self.stop()
+                return
+            self.events_streams[stream_key]['last_event_timestamp'] = time.time()
+            if self.events_destination:
+                log_for_level(self.logger, logging.DEBUG, "Sending message to destination...")
+                try:
+                    self.events_destination.put(decoded_msg)
+                except Exception as e:
+                    log_for_level(self.logger, logging.ERROR, "Failed to put message to the destination queue",
+                                  exc_info=e)
+            else:
+                log_for_level(self.logger, logging.DEBUG, "Calling event callback for message...")
+                try:
+                    self.events_callback(decoded_msg)
+                except Exception as e:
+                    log_for_level(self.logger, logging.ERROR,
+                                  "An error occurred when invoking the callback function", exc_info=e)
 
     @log_entry_exit()
     def handle_error(self, stream_key, exc):
