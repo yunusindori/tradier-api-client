@@ -629,7 +629,7 @@ class StreamingClient:
                 payload = msg.decode("utf-8") if isinstance(msg, (bytes, bytearray)) else msg
                 decoded_msg = json.loads(payload)
             except (UnicodeDecodeError, json.JSONDecodeError):
-                log_for_level(self.logger, logging.ERROR, "Failed to decode stream message as JSON", exc_info=True)
+                log_for_level(self.logger, logging.ERROR, f"Failed to decode stream message as JSON: {msg}", exc_info=False)
                 return
 
         log_for_level(self.logger, logging.DEBUG, f"Received message from listener with key: {stream_key}")
