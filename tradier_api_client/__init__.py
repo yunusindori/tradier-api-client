@@ -8,5 +8,5 @@ from tradier_api_client.streaming.streaming_client import StreamingClient
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 __all__ = ["StreamingClient", "RestClient"]
