@@ -1,0 +1,258 @@
+Tradier order wrapper cleanup plan
+Reviewed: 2026-04-11
+
+Sources:
+- https://docs.tradier.com/reference/trading
+- https://docs.tradier.com/docs/trading
+
+Goal:
+- Keep the existing OrderWrapper surface mostly intact, but make each public method's
+  purpose obvious and its generated payload usable against the documented Tradier order
+  shapes.
+- This is a minimal-change plan, not a full redesign.
+
+Global minimal changes:
+- Add preview: bool = False to every place_* method and pass it to
+  RestClient.place_order(order=order, preview=preview, tag=tag, timeout=timeout).
+- Add small validation helpers for positive quantity, positive price/stop, equity sides,
+  option sides, duration, and multileg order_type.
+- Use documented equity sides: buy, sell, sell_short, buy_to_cover.
+- Use documented option sides: buy_to_open, sell_to_open, buy_to_close, sell_to_close.
+- Do not allow duration=pre or duration=post unless the order is an equity limit order.
+- Prefer order-level duration for advanced orders unless per-leg duration is explicitly
+  needed.
+- Remove advanced=oto and advanced=otoco from serialized payloads unless sandbox testing
+  proves Tradier still accepts or requires it.
+- For stop orders, send stop only. Do not also send price unless the order type is
+  stop_limit.
+- Add docstrings that state whether a method is equity-only, option-only, advanced,
+  or unsupported.
+
+place_close_bracket_order
+Purpose to make clear:
+- Close an existing position with an OCO take-profit and stop-loss.
+
+Minimal changes:
+- Add exit_side: str = "sell" so the method can close long positions with sell and
+  short positions with buy_to_cover.
+- Validate exit_side is sell or buy_to_cover.
+- Delegate to place_oco_order using the same exit_side to remove duplicated behavior.
+- Fix oco_equity() so the stop leg sends stop[n] only, not price[n].
+- Set duration at the order level for the OCO payload, or document why per-leg duration
+  is intentionally used.
+- Add preview support.
+
+place_bracket_order
+Purpose to make clear:
+- Open a long or short equity position and attach mutually exclusive take-profit and
+  stop/stop-limit exits.
+
+Minimal changes:
+- Rename or document base_side as direction, not raw Tradier side: use "long" and
+  "short", or map current "buy" to buy/sell exits and current "sell" to
+  sell_short/buy_to_cover.
+- For short brackets, submit parent side as sell_short and closing side as buy_to_cover.
+- Restrict parent base_type to documented advanced parent types: limit, stop, or
+  stop_limit. Do not allow market unless sandbox testing confirms OTOCO market parents.
+- Require base_price for limit and stop_limit parents; require stop for stop and
+  stop_limit parents if those parent types are supported.
+- Enforce child order types are different, as documented for OTOCO child orders.
+- Enforce exactly one stop-limit offset input: stop_loss_limit_percent or
+  stop_limit_offset_abs, not both.
+- Validate all percentages are positive and resulting prices are positive.
+- Remove advanced=otoco unless confirmed by sandbox testing.
+- Use documented order-level duration unless intentionally using per-leg duration.
+- Add preview support.
+
+place_limit_order
+Purpose to make clear:
+- Place a single-leg equity limit order.
+
+Minimal changes:
+- Validate side is one of buy, sell, sell_short, buy_to_cover.
+- Validate quantity > 0 and limit_price > 0.
+- Keep duration=pre/post allowed only here among the simple equity wrappers, because
+  Tradier documents extended-hours orders as equity limit orders.
+- Add preview support.
+- Update docstring to say this is equity-only.
+
+place_market_order
+Purpose to make clear:
+- Place a single-leg equity market order.
+
+Minimal changes:
+- Validate side is one of buy, sell, sell_short, buy_to_cover.
+- Validate quantity > 0.
+- Reject duration=pre and duration=post because extended-hours orders must be limit
+  orders.
+- Add preview support.
+- Update docstring to say this is equity-only.
+
+place_stop_order
+Purpose to make clear:
+- Place a single-leg equity stop order.
+
+Minimal changes:
+- Validate side is one of buy, sell, sell_short, buy_to_cover.
+- Validate quantity > 0 and stop_price > 0.
+- Reject duration=pre and duration=post.
+- Send stop only, with no price field.
+- Add preview support.
+- Update docstring to say this is equity-only and stop-market style after trigger.
+
+place_stop_limit_order
+Purpose to make clear:
+- Place a single-leg equity stop-limit order.
+
+Minimal changes:
+- Validate side is one of buy, sell, sell_short, buy_to_cover.
+- Validate quantity > 0, stop_price > 0, and limit_price > 0.
+- Reject duration=pre and duration=post.
+- Keep sending both stop and price.
+- Add optional validation for side-dependent stop/limit relationships, or document that
+  the broker performs this validation.
+- Add preview support.
+- Update docstring to say this is equity-only.
+
+place_oto_order
+Purpose to make clear:
+- Place a one-triggers-other order where a parent order triggers one child order.
+
+Minimal changes:
+- Either remove the duration parameter or apply it consistently to the order/legs.
+- Prefer child_order_leg: OrderLeg instead of child_order_legs: list[OrderLeg], because
+  the documented OTO shape has one parent and one triggered order.
+- If keeping a list, validate len(child_order_legs) == 1.
+- Validate parent type is not market.
+- Validate parent and child sides/types match documented equity or option values.
+- Remove advanced=oto unless confirmed by sandbox testing.
+- Use documented order-level duration unless intentionally using per-leg duration.
+- Add preview support.
+
+place_combo_order
+Purpose to make clear:
+- Place a documented combo order containing one equity leg and one or two option legs.
+
+Minimal changes:
+- Change signature to include order_type: str and price: float | None:
+  place_combo_order(symbol, order_type, legs, price=None, duration="day", ...).
+- Validate order_type is market, debit, credit, or even.
+- Require price for debit/credit combo orders if Tradier requires priced combo orders.
+- Validate there are exactly 2 or 3 legs.
+- Validate exactly one equity leg and one or two option legs.
+- Update combo serialization to emit option_symbol[n]=None/null for the equity leg.
+- Use order-level type, duration, and price. Do not rely on leg-level type/duration for
+  combo orders.
+- Add preview support.
+- Update docstring so this is not described as a generic multileg order.
+
+place_oco_order
+Purpose to make clear:
+- Place a two-leg OCO exit where filling one leg cancels the other.
+
+Minimal changes:
+- Add exit_side: str = "sell" so the method can close long positions with sell and
+  short positions with buy_to_cover.
+- Validate exit_side is sell or buy_to_cover.
+- Fix oco_equity() so the stop leg sends stop[n] only, not price[n].
+- Validate the two child order types differ.
+- Use documented order-level duration unless intentionally using per-leg duration.
+- Add optional support for option_symbol OCO, or rename/docstring this as equity-only.
+- Add preview support.
+
+place_trailing_stop_order
+Purpose to make clear:
+- Explicitly mark trailing stops as unsupported by this wrapper because the reviewed
+  Tradier trading docs do not document a trailing-stop order shape.
+
+Minimal changes:
+- Keep raising NotImplementedError, but update the message to:
+  "Trailing stop orders are not documented by Tradier's trading API."
+- Remove unused implementation assumptions from the docstring.
+- Optionally remove side, quantity, trail_percent, and duration parameters in a future
+  breaking change; for now, leave them for compatibility.
+
+place_option_spread_order
+Purpose to make clear:
+- Place a two-leg vertical option spread.
+
+Minimal changes:
+- Add underlying symbol to the signature:
+  place_option_spread_order(symbol, buy_symbol, sell_symbol, quantity, order_type,
+  price=None, duration="day", ...).
+- Validate order_type is debit, credit, even, or market.
+- Put price at the order level for debit/credit spreads; do not store it on each leg.
+- Build a class=multileg order with symbol set to the underlying.
+- Use option_symbol[0]/option_symbol[1], side[0]/side[1], and quantity[0]/quantity[1].
+- Allow caller to choose opening or closing spread sides, or document that this helper
+  is open-only and always uses buy_to_open/sell_to_open.
+- Delegate to place_multi_leg_order after place_multi_leg_order accepts price.
+- Add preview support.
+
+place_multi_leg_order
+Purpose to make clear:
+- Place a documented multileg option order.
+
+Minimal changes:
+- Update docstring to say option multileg only; remove the equity claim.
+- Add price: float | None = None.
+- Validate order_type is market, debit, credit, or even.
+- Require price for debit/credit orders if Tradier requires priced multileg orders.
+- Validate 2 <= len(legs) <= 4.
+- Validate every leg has option_symbol.
+- Validate every leg side is one of the documented option sides.
+- Serialize price as an order-level field via Order.extras when provided.
+- Add preview support.
+
+modify_existing_order
+Purpose to make clear:
+- Modify mutable fields on an existing open/pending order.
+
+Minimal changes:
+- Validate at least one of order_type, duration, price, or stop is supplied.
+- Validate price > 0 and stop > 0 when supplied.
+- Update docstring to state that quantity and legs are not modifiable through this
+  method.
+- Optionally add verify_status: bool = False to fetch the order after modification.
+
+cancel_order
+Purpose to make clear:
+- Cancel one existing order by id.
+
+Minimal changes:
+- Update docstring to state the order must be open or pending.
+- Optionally add verify_status: bool = False to fetch the order after cancellation, as
+  recommended by the docs.
+- Return the cancel response unchanged unless verify_status is enabled.
+
+cancel_all_oco_orders
+Purpose to make clear:
+- Convenience bulk-cancel helper for current-day OCO orders.
+
+Minimal changes:
+- Make the danger explicit in the docstring: this is not a Tradier bulk endpoint.
+- Add optional filters: symbol: str | None = None and tag: str | None = None.
+- Skip orders without an id instead of sending cancel_order(account_id, None).
+- Only cancel orders that are still open/pending if the response includes status.
+- Optionally add dry_run: bool = False so callers can inspect what would be canceled.
+
+Serializer/helper changes needed to support the method cleanup:
+- Change oco_equity() to accept exit_side and order-level duration, and to omit price
+  from stop legs.
+- Change oto_equity() and otoco_equity() to avoid advanced=... unless sandbox testing
+  confirms it is accepted.
+- Change option_vertical() to accept underlying symbol, order_type, and order-level
+  price, or remove it and route through place_multi_leg_order.
+- Add combo-specific serialization instead of treating class=combo as generic indexed
+  legs.
+- Add Order extras support for order-level price on multileg orders through the public
+  wrapper.
+
+Recommended implementation order:
+1. Add preview plumbing and validation helpers.
+2. Fix OCO/close bracket stop-leg serialization and exit side support.
+3. Fix multileg price support, then repair place_option_spread_order by delegating to
+   place_multi_leg_order.
+4. Normalize OTO/OTOCO serialization and parent/child validation.
+5. Rewrite combo support around the documented combo payload.
+6. Add single-leg option wrappers after the equity and multileg paths are stable.
