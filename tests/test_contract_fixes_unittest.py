@@ -124,6 +124,35 @@ class ContractFixesTests(unittest.TestCase):
         self.assertEqual(response, {"ok": True})
         self.assertEqual(captured.getvalue(), "")
 
+    def test_order_wrapper_forwards_preview(self):
+        rest_client = Mock()
+        rest_client.place_order.return_value = {"ok": True}
+        wrapper = OrderWrapper(rest_client)
+
+        response = wrapper.place_limit_order(
+            symbol="AAPL",
+            side="buy",
+            quantity=1,
+            limit_price=100.0,
+            preview=True,
+        )
+
+        self.assertEqual(response, {"ok": True})
+        self.assertTrue(rest_client.place_order.call_args.kwargs["preview"])
+
+    def test_order_wrapper_validates_equity_side(self):
+        rest_client = Mock()
+        wrapper = OrderWrapper(rest_client)
+
+        with self.assertRaises(ValueError):
+            wrapper.place_market_order(
+                symbol="AAPL",
+                side="buy_to_open",
+                quantity=1,
+            )
+
+        rest_client.place_order.assert_not_called()
+
     def test_streaming_messages_are_decoded_before_callback(self):
         client = StreamingClient.__new__(StreamingClient)
         client.logger = Mock()

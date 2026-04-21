@@ -408,7 +408,8 @@ class StreamingClient:
                               exc_info=e)
         elif self.stream_type == 'market':
             symbols = self.events_streams[stream_key]['symbols']
-            initial_payload = self.build_market_stream_payload(symbols=symbols, session_id=session_id)
+            initial_payload = self.build_market_stream_payload(symbols=symbols, session_id=session_id,
+                                                                payload_type_filter=self.events_streams[stream_key]['event_types'])
             log_for_level(self.logger, logging.INFO, f"Sending initial payload to stream: {initial_payload}")
             try:
                 stream = self.events_streams[stream_key]['stream']
